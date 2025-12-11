@@ -1,0 +1,11 @@
+# Bỏ qua thư mục .terraform (được tạo ra khi init)
+**/.terraform/
+
+# Bỏ qua file state (chứa thông tin nhạy cảm)
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+
+# Bỏ qua file khóa (tùy chọn, thường giữ lại .hcl.lock nhưng nếu lỗi embedded thì bỏ qua tạm)
+.terraform.lock.hcl
