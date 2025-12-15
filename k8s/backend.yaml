@@ -82,7 +82,7 @@ spec:
             # --- CẤU HÌNH KHÁC ---
             - name: CLIENT_URL
               # 👇 [SỬA TỰ ĐỘNG] Dùng biến server_ip
-              value: "http://44.221.83.178"
+              value: "http://3.238.147.65:31107"
             - name: SENDGRID_API_KEY
               value: "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"
             - name: RESET_PASSWORD_EXPIRE
