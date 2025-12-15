@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: frontend
+  name: dolciluxe-frontend-service
 spec:
   # LoadBalancer sẽ xin AWS cấp cho 1 cái Public IP (truy cập từ internet)
   type: LoadBalancer
   selector:
-    app: frontend
+    app: dolciluxe-frontend
   ports:
     - protocol: TCP
       port: 80       # Port người dùng truy cập
@@ -15,20 +15,22 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: frontend
+  name: dolciluxe-frontend
 spec:
   replicas: 2 # Chạy 2 bản sao để đảm bảo không sập
   selector:
     matchLabels:
-      app: frontend
+      app: dolciluxe-frontend
   template:
     metadata:
       labels:
-        app: frontend
+        app: dolciluxe-frontend
     spec:
+      imagePullSecrets:
+      - name: regcred
       containers:
-        - name: frontend
+        - name: dolciluxe-frontend-container
           # --- THAY IMAGE CỦA BẠN VÀO ĐÂY ---
-          image: 357343206694.dkr.ecr.us-east-1.amazonaws.com/dolciluxe-frontend:v2
+          image: 882816896880.dkr.ecr.us-east-1.amazonaws.com/dolciluxe-frontend:v2
           ports:
             - containerPort: 80

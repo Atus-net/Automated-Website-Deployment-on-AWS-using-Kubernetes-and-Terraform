@@ -4,8 +4,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
+# Khai báo biến nhận từ Jenkins
+ARG VITE_BACKEND_URL
+# Gán vào môi trường để Vite build
+ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
 
-ENV VITE_BACKEND_URL=""
 RUN npm run build 
 # (Mặc định Vite build ra folder 'dist')
 
