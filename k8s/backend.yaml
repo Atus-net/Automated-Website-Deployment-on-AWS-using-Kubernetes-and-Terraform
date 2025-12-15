@@ -69,7 +69,7 @@ spec:
               value: "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
             - name: VNP_RETURN_URL
               # 👇 [SỬA TỰ ĐỘNG] Dùng biến server_ip để Terraform điền IP mới vào
-              value: "http://44.221.83.178/payment-return"
+              value: "http://3.238.147.65:31107/payment-return"
 
             # --- CẤU HÌNH GOOGLE ---
             - name: GOOGLE_CLIENT_ID
