@@ -33,6 +33,6 @@ spec:
       containers:
         - name: frontend
           # 👇 [SỬA TỰ ĐỘNG] Dùng biến để Terraform điền URL ECR mới vào
-          image: latuss/dolciluxe-frontend:latest
+          image: ${ecr_url}/dolciluxe-frontend:latest
           ports:
             - containerPort: 80
