@@ -5,9 +5,9 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 
-# ❌ ĐÃ XÓA DÒNG ENV VITE_BACKEND_URL (Để code tự nhận diện IP động)
-
+ENV VITE_BACKEND_URL="http://44.192.54.232:8080"
 RUN npm run build 
+# (Mặc định Vite build ra folder 'dist')
 
 # Stage 2: Serve
 FROM nginx:alpine

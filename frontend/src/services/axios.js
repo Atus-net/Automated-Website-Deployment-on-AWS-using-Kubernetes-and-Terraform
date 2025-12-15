@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const BE_BASE_URL = import.meta.env.VITE_BACKEND_URL || '';
+// --- [ĐOẠN SỬA QUAN TRỌNG] ---
+// Thay vì lấy từ biến môi trường (cứng), ta lấy động theo trình duyệt
+// Ví dụ: Web chạy ở IP 1.2.3.4 thì Backend sẽ là http://1.2.3.4:8080
+const BE_BASE_URL = `${window.location.protocol}//${window.location.hostname}:8080`;
 
 const response = axios.create({
   baseURL: BE_BASE_URL, 
@@ -46,8 +49,9 @@ response.interceptors.response.use(
       try {
         const refresh_token = localStorage.getItem('refresh_token');
 
+        // [CẬP NHẬT] Đảm bảo gọi đúng URL refresh token với BE_BASE_URL động
         const res = await axios.post(`${BE_BASE_URL}/api/auth/refresh-token`, {
-          refreshToken: refresh_token, // tên biến thống nhất
+          refreshToken: refresh_token, 
         });
 
         if (res.data.code === 200 && res.data.accessToken) {
@@ -58,6 +62,8 @@ response.interceptors.response.use(
 
           // Gửi lại request cũ
           originalConfig.headers.Authorization = `Bearer ${newAccess}`;
+          // [QUAN TRỌNG] Phải update lại baseURL cho request cũ nếu cần
+          originalConfig.baseURL = BE_BASE_URL; 
           return response(originalConfig);
         } else {
           throw new Error('Refresh token không hợp lệ');

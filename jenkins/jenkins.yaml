@@ -18,7 +18,7 @@ spec:
       labels:
         app: jenkins
     spec:
-      serviceAccountName: jenkins-admin # Cần tạo SA này (xem bước dưới)
+      serviceAccountName: jenkins-admin
       containers:
       - name: jenkins
         image: jenkins/jenkins:lts
@@ -29,7 +29,7 @@ spec:
             mountPath: /var/jenkins_home
       volumes:
         - name: jenkins-data
-          emptyDir: {}
+          emptyDir: {} # Lưu ý: Dữ liệu sẽ mất nếu Pod restart. (Dùng cho lab thì OK)
 ---
 apiVersion: v1
 kind: Service
@@ -37,9 +37,10 @@ metadata:
   name: jenkins
   namespace: jenkins
 spec:
-  type: LoadBalancer # K3s sẽ map cổng này ra IP của EC2
+  type: LoadBalancer
   selector:
     app: jenkins
   ports:
-    - port: 8080
-      targetPort: 8080
+    - name: http
+      port: 8081       # 👈 ĐÃ SỬA: Đổi sang 8081 để không đụng hàng với Backend
+      targetPort: 8080 # Cổng trong container vẫn là 8080 (mặc định của Jenkins)
