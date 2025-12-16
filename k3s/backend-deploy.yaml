@@ -1,16 +1,3 @@
-apiVersion: v1
-kind: Service
-metadata:
-  name: backend
-spec:
-  type: LoadBalancer
-  selector:
-    app: backend
-  ports:
-    - protocol: TCP
-      port: 8080
-      targetPort: 8080
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,30 +12,24 @@ spec:
       labels:
         app: backend
     spec:
-      # --- [QUAN TRỌNG] CHÌA KHÓA ĐỂ TẢI ẢNH TỪ AWS ---
-      # (Phải đặt ngang hàng với containers, KHÔNG được đặt bên trong)
       imagePullSecrets:
-        - name: regcred
-
+        - name: regcred # Secret để pull image (nếu private)
       containers:
         - name: backend
-          # 👇 [SỬA TỰ ĐỘNG] Dùng biến để Terraform điền URL ECR mới vào
           image: latuss/dolciluxe-backend:latest
           ports:
             - containerPort: 8080
-          
-          # --- Biến môi trường (Env) ---
           env:
             - name: PORT
               value: "8080"
-            - name: NODE_ENV
-              value: "production"
-            
-            # --- DATABASE ATLAS (Giữ nguyên nếu không đổi) ---
+            - name: CLIENT_URL
+              value: "http://3.80.162.184" # URL Frontend (Không có port vì dùng Ingress)
+            - name: VNP_RETURN_URL
+              value: "http://3.80.162.184/payment-return"
             - name: MONGO_URI
               value: "mongodb+srv://dolciluxe:R9dQnvJoVIPyGnd9@dolciluxe.emcruiv.mongodb.net/Dolciluxe?retryWrites=true&w=majority"
-
-            # --- CẤU HÌNH JWT ---
+            # ... (Các biến JWT/VNPAY khác bạn copy lại từ file cũ nếu cần) ...
+                        # --- CẤU HÌNH JWT ---
             - name: JWT_SECRET
               value: "5a960358dc3a5e2aa801a8264dc28050f54c8c96fc3937ae936ca6f48d858d374504d18bd8e3eb6e25c5c8ddbe27b1ca0b0ad23d0085d1783349507283930f09"
             - name: JWT_REFRESH_SECRET
@@ -67,9 +48,6 @@ spec:
               value: "8T00XWG5TQDUQCQP7GLCYUYLRYUBJ550"
             - name: VNP_URL
               value: "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
-            - name: VNP_RETURN_URL
-              # 👇 [SỬA TỰ ĐỘNG] Dùng biến server_ip để Terraform điền IP mới vào
-              value: "http://3.238.147.65:31107/payment-return"
 
             # --- CẤU HÌNH GOOGLE ---
             - name: GOOGLE_CLIENT_ID
@@ -78,11 +56,6 @@ spec:
               value: "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"
             - name: GOOGLE_CALLBACK_URL
               value: "/api/auth/google/callback"
-
-            # --- CẤU HÌNH KHÁC ---
-            - name: CLIENT_URL
-              # 👇 [SỬA TỰ ĐỘNG] Dùng biến server_ip
-              value: "http://3.238.147.65:31107"
             - name: SENDGRID_API_KEY
               value: "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"
             - name: RESET_PASSWORD_EXPIRE
