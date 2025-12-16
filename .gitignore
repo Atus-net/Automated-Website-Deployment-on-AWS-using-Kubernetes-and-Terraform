@@ -26,3 +26,8 @@ id_rsa.pub
 .vscode/
 .idea/
 .DS_Store
+
+*.drf
+*.bck
+
+.k3s-drf/*
