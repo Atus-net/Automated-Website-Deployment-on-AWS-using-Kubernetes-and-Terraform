@@ -1,0 +1,19 @@
+- name: Install K3s on Master
+  shell: curl -sfL https://get.k3s.io | sh -
+  environment:
+    INSTALL_K3S_EXEC: "server --disable=traefik --write-kubeconfig-mode 644"
+
+- name: Wait for node-token file to be created
+  wait_for:
+    path: /var/lib/rancher/k3s/server/node-token
+
+- name: Get Node Token from Master
+  shell: cat /var/lib/rancher/k3s/server/node-token
+  register: master_token
+
+- name: Set Token as fact for workers
+  set_fact:
+    k3s_token: "{{ master_token.stdout }}"
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  with_items: "{{ groups['workers'] }}"

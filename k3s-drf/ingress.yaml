@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dolciluxe-ingress
+  annotations:
+    # Traefik là Ingress Controller mặc định của K3s
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # 1. Đường dẫn cho API Backend (Ví dụ: http://IP/api/...)
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8080
+          # 2. Đường dẫn cho Frontend (Tất cả cái còn lại vào Frontend)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

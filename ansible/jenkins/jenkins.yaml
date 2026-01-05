@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jenkins
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins
+  namespace: jenkins
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+    spec:
+      serviceAccountName: jenkins-admin
+      # Ép Jenkins chạy trên Node Monitor (Worker-3)
+      nodeSelector:
+        role: monitor
+      
+      # 👇 PHẦN MỚI THÊM VÀO: Tự động sửa quyền thư mục trước khi chạy
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command: ["sh", "-c", "chown -R 1000:1000 /var/jenkins_home"]
+        securityContext:
+          runAsUser: 0 # Chạy bằng quyền Root để sửa được thư mục
+        volumeMounts:
+        - name: jenkins-data
+          mountPath: /var/jenkins_home
+      # 👆 KẾT THÚC PHẦN MỚI
+      
+      containers:
+      - name: jenkins
+        image: jenkins/jenkins:lts
+        ports:
+          - containerPort: 8080
+        volumeMounts:
+          - name: jenkins-data
+            mountPath: /var/jenkins_home
+      volumes:
+        - name: jenkins-data
+          hostPath:
+            # Lưu dữ liệu ở thư mục này trên máy Worker
+            path: /home/ubuntu/jenkins-data
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins
+  namespace: jenkins
+spec:
+  type: LoadBalancer
+  selector:
+    app: jenkins
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8080

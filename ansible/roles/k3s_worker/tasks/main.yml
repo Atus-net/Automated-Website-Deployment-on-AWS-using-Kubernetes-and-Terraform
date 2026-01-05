@@ -1,0 +1,16 @@
+---
+- name: "Kết nối máy Worker vào cụm K3s"
+  shell: |
+    curl -sfL https://get.k3s.io | K3S_URL=https://{{ hostvars['master_node']['ansible_host'] }}:6443 \
+    K3S_TOKEN={{ k3s_token }} sh -
+  register: worker_join_result
+  changed_when: "'K3s is up and running' not in worker_join_result.stdout"
+- name: "FIX: Tạo thư mục storage cho Jenkins và cấp quyền 1000"
+  file:
+    path: /var/lib/rancher/k3s/storage/
+    state: directory
+    owner: "1000"
+    group: "1000"
+    mode: '0755'
+    recurse: yes
+  become: true

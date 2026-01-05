@@ -1,0 +1,15 @@
+---
+# File điều phối chính
+
+# 1. Gọi file Hạ tầng (Chạy khi bạn muốn cài DB/Jenkins/Service)
+# Dùng tag 'infra' để chạy riêng phần này nếu muốn
+- import_tasks: infrastructure.yml
+  tags: 
+    - infra
+    - setup
+
+# 2. Gọi file Deploy App (Chạy mỗi khi CI/CD kích hoạt)
+# Dùng tag 'deploy' để chạy riêng phần này
+- import_tasks: deployment.yml
+  tags: 
+    - deploy

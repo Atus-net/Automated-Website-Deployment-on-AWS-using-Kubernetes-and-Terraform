@@ -1,0 +1,73 @@
+# --- GRAFANA ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: k3s-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      # 👇 Chạy trên Node Monitor
+      nodeSelector:
+        role: monitor
+      containers:
+        - name: grafana
+          image: grafana/grafana:latest
+          ports:
+            - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: k3s-app
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 31383
+  type: NodePort
+
+---
+# --- JENKINS (Container-based) ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins
+  namespace: jenkins
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+    spec:
+      # 👇 Chạy trên Node Monitor để tiết kiệm tài nguyên cho App
+      nodeSelector:
+        role: monitor
+      serviceAccountName: jenkins-admin # Đảm bảo đã tạo SA này
+      containers:
+        - name: jenkins
+          image: jenkins/jenkins:lts
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: jenkins-home
+              mountPath: /var/jenkins_home
+      volumes:
+        - name: jenkins-home
+          hostPath:
+            path: /home/ubuntu/jenkins-data
+            type: DirectoryOrCreate

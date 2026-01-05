@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      imagePullSecrets:
+        - name: regcred # Secret để pull image (nếu private)
+      containers:
+        - name: backend
+          image: latuss/dolciluxe-backend:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: CLIENT_URL
+              value: "http://3.80.162.184" # URL Frontend (Không có port vì dùng Ingress)
+            - name: VNP_RETURN_URL
+              value: "http://3.80.162.184/payment-return"
+            - name: MONGO_URI
+              value: "mongodb+srv://dolciluxe:R9dQnvJoVIPyGnd9@dolciluxe.emcruiv.mongodb.net/Dolciluxe?retryWrites=true&w=majority"
+            # ... (Các biến JWT/VNPAY khác bạn copy lại từ file cũ nếu cần) ...
+                        # --- CẤU HÌNH JWT ---
+            - name: JWT_SECRET
+              value: "5a960358dc3a5e2aa801a8264dc28050f54c8c96fc3937ae936ca6f48d858d374504d18bd8e3eb6e25c5c8ddbe27b1ca0b0ad23d0085d1783349507283930f09"
+            - name: JWT_REFRESH_SECRET
+              value: "to1x7fmjd7465dfa3neir1ilg89bq2zj"
+            - name: JWT_EXPIRES_IN
+              value: "1d"
+            - name: JWT_REFRESH_EXPIRES_IN
+              value: "7d"
+            - name: SESSION_SECRET
+              value: "702f6685567d758663e1af949a02f003f4c9fbb0bc080a74b60d7738d4f764a9cc0776f15113c5b5a4be2e33ceaf08f5b007039eb2afa2efa0e69dc9a8292086"
+
+            # --- CẤU HÌNH VNPAY ---
+            - name: VNP_TMNCODE
+              value: "IIOL90HF"
+            - name: VNP_HASHSECRET
+              value: "8T00XWG5TQDUQCQP7GLCYUYLRYUBJ550"
+            - name: VNP_URL
+              value: "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
+
+            # --- CẤU HÌNH GOOGLE ---
+            - name: GOOGLE_CLIENT_ID
+              value: "302233057302-rcid910k155pfbk1qqcpa17gvvbs00cp.apps.googleusercontent.com"
+            - name: GOOGLE_CLIENT_SECRET
+              value: "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"
+            - name: GOOGLE_CALLBACK_URL
+              value: "/api/auth/google/callback"
+            - name: SENDGRID_API_KEY
+              value: "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"
+            - name: RESET_PASSWORD_EXPIRE
+              value: "15"

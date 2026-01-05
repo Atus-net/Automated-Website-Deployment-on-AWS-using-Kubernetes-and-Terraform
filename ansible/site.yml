@@ -1,0 +1,74 @@
+---
+# GIAI ĐOẠN 1: SETUP K3S
+- name: "SETUP: Cấu hình cơ bản"
+  hosts: all
+  become: yes
+  tags: [setup, k3s]
+  roles:
+    - k3s_setup
+
+- name: "SETUP: Master Node"
+  hosts: masters
+  become: yes
+  tags: [setup, k3s]
+  roles:
+    - k3s_master
+
+- name: "SETUP: Worker Nodes"
+  hosts: workers
+  become: yes
+  tags: [setup, k3s]
+  roles:
+    - k3s_worker
+
+# GIAI ĐOẠN 2: DÁN NHÃN (Chạy trước khi deploy)
+- name: "CONFIG: Dán nhãn tự động"
+  hosts: masters
+  become: true
+  tags: [setup, label]
+  tasks:
+    - name: "Gather facts from workers"
+      setup:
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['workers'] }}"
+
+    - name: "Apply Labels"
+      shell: >
+        kubectl label nodes {{ hostvars[item]['ansible_hostname'] }} role={{ hostvars[item]['node_role'] }} --overwrite
+      loop: "{{ groups['workers'] }}"
+      when: hostvars[item]['node_role'] is defined
+      ignore_errors: true
+
+# GIAI ĐOẠN 3: DEPLOY APP
+- name: "DEPLOY: Triển khai ứng dụng"
+  hosts: masters
+  become: yes
+  tags: [deploy]
+  tasks:
+    # 1. Hạ tầng (Infra)
+    - name: ">>> STEP 1: Deploy Infrastructure <<<"
+      include_role:
+        name: deploy_app
+        tasks_from: infrastructure.yml
+      tags: [infra]
+
+    # 2. Backend
+    - name: ">>> STEP 2: Deploy Backend <<<"
+      include_role:
+        name: deploy_app
+        tasks_from: deployment.yml
+      vars:
+        target_service: backend
+        image_tag: latest
+      tags: [backend]
+
+    # 3. Frontend
+    - name: ">>> STEP 3: Deploy Frontend <<<"
+      include_role:
+        name: deploy_app
+        tasks_from: deployment.yml
+      vars:
+        target_service: frontend
+        image_tag: latest
+      tags: [frontend]

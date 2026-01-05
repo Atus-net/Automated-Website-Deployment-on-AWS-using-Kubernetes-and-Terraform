@@ -1,0 +1,33 @@
+---
+- name: "Cập nhật danh sách gói hệ thống"
+  apt:
+    update_cache: yes
+    force_apt_get: yes
+
+- name: "Cài đặt các gói hỗ trợ cần thiết"
+  apt:
+    name:
+      - curl
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - python3-pip
+    state: present
+
+- name: "Cài đặt thư viện Kubernetes cho Python (dành cho Ansible)"
+  pip:
+    name: kubernetes
+    state: present
+
+- name: "Vô hiệu hóa Firewall (UFW) để các Node kết nối thông suốt"
+  ufw:
+    state: disabled
+
+- name: "Dừng và vô hiệu hóa các dịch vụ gây xung đột (nếu có)"
+  systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: no
+  with_items:
+    - ufw
+  ignore_errors: yes

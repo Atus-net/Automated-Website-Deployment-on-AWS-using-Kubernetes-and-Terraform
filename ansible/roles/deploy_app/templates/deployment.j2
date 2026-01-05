@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ service_name }}
+  namespace: k3s-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ service_name }}
+  template:
+    metadata:
+      labels:
+        app: {{ service_name }}
+    spec:
+      nodeSelector:
+        role: {{ target_node_role }}
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: {{ service_name }}
+          image: latuss/dolciluxe-{{ service_name }}:{{ app_image_tag }}
+          ports:
+            - containerPort: {{ (service_name == 'backend') | ternary(8080, 80) }}
+          env:
+            - name: PORT
+              value: "{{ (service_name == 'backend') | ternary('8080', '80') }}"
+            
+{% if service_name == 'backend' %}
+            # --- CẤU HÌNH ĐÚNG CHUẨN (Lấy từ Secret do Ansible tạo ra) ---
+            
+            # 1. Tự động lấy IP Server (được Ansible detect và bắn vào Secret)
+            - name: CLIENT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: CLIENT_URL
+            - name: VNP_RETURN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: VNP_RETURN_URL
+            
+            # 2. Lấy Mongo URI (sẽ lấy giá trị mới từ secrets.yml bạn vừa sửa ở trên)
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: MONGO_URI
+
+            # 3. Các biến mật khẩu khác
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: JWT_SECRET
+            - name: JWT_REFRESH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: JWT_REFRESH_SECRET
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: SESSION_SECRET
+            - name: VNP_TMNCODE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: VNP_TMNCODE
+            - name: VNP_HASHSECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: VNP_HASHSECRET
+            - name: VNP_URL
+              value: "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: GOOGLE_CLIENT_ID
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: GOOGLE_CLIENT_SECRET
+            - name: GOOGLE_CALLBACK_URL
+              value: "/api/auth/google/callback"
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ service_name }}-secrets
+                  key: SENDGRID_API_KEY
+            - name: RESET_PASSWORD_EXPIRE
+              value: "15"
+            - name: JWT_EXPIRES_IN
+              value: "1d"
+            - name: JWT_REFRESH_EXPIRES_IN
+              value: "7d"
+{% endif %}
