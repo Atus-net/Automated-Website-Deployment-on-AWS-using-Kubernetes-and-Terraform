@@ -21,6 +21,25 @@
   roles:
     - k3s_worker
 
+- name: Setup kubeconfig for Ansible/Jenkins
+  hosts: masters
+  become: yes
+  tasks:
+    - name: Copy kubeconfig
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /home/ubuntu/.kube/config
+        remote_src: yes
+        owner: ubuntu
+        group: ubuntu
+        mode: 0644
+
+    - name: Replace localhost with master IP
+      replace:
+        path: /home/ubuntu/.kube/config
+        regexp: '127.0.0.1'
+        replace: "{{ ansible_host }}"
+        
 # GIAI ĐOẠN 2: DÁN NHÃN (Chạy trước khi deploy)
 - name: "CONFIG: Dán nhãn tự động"
   hosts: masters

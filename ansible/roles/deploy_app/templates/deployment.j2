@@ -5,6 +5,11 @@ metadata:
   namespace: k3s-app
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: {{ service_name }}
@@ -20,15 +25,18 @@ spec:
       containers:
         - name: {{ service_name }}
           image: latuss/dolciluxe-{{ service_name }}:{{ app_image_tag }}
+          imagePullPolicy: Always
           ports:
             - containerPort: {{ (service_name == 'backend') | ternary(8080, 80) }}
-          env:
-            - name: PORT
-              value: "{{ (service_name == 'backend') | ternary('8080', '80') }}"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
             
 {% if service_name == 'backend' %}
-            # --- CẤU HÌNH ĐÚNG CHUẨN (Lấy từ Secret do Ansible tạo ra) ---
-            
             # 1. Tự động lấy IP Server (được Ansible detect và bắn vào Secret)
             - name: CLIENT_URL
               valueFrom:

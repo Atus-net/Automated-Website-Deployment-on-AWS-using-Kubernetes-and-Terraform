@@ -19,7 +19,9 @@ ansible/setup-jenkins-creds.yml
 
 # --- Script (CHẶN CÁI NÀY) ---
 # Chặn file chứa pass Docker Hub
-Scripts/setup-cicd.sh
+
+*.sh
+!*.example
 
 # --- Key & Config ---
 *.pem
