@@ -1,14 +1,5 @@
-output "vpc_id" {
-  description = "ID của VPC vừa tạo"
-  value       = aws_vpc.k3s_vpc.id
-}
-
-output "subnet_id" {
-  description = "ID của Subnet (Cần nhớ cái này để Stage 2 đặt máy vào)"
-  value       = aws_subnet.k3s_subnet.id
-}
-
-output "security_group_id" {
-  description = "ID của Security Group"
-  value       = aws_security_group.k3s_sg.id
-}
+output "vpc_id" { value = aws_vpc.this.id }
+output "subnet_id" { value = aws_subnet.public.id }
+output "sg_devops_id" { value = aws_security_group.devops.id }
+output "sg_master_id" { value = aws_security_group.master.id }
+output "sg_worker_id" { value = aws_security_group.worker.id }

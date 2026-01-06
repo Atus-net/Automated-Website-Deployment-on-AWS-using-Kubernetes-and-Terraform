@@ -24,3 +24,9 @@ process.on('unhandledRejection', (reason, promise) => {
         console.log('>>> Error connect to DB:', error);
     }
 })();
+// Handle graceful shutdown 
+process.on('SIGTERM', async () => {
+    console.log('SIGTERM signal received');
+    await connection.close();
+    process.exit(0);
+});                                                             

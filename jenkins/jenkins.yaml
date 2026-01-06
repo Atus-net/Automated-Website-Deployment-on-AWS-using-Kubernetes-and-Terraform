@@ -1,22 +1,10 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: jenkins
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: jenkins
   namespace: jenkins
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: jenkins
   template:
-    metadata:
-      labels:
-        app: jenkins
     spec:
       serviceAccountName: jenkins-admin
       containers:
@@ -29,7 +17,8 @@ spec:
             mountPath: /var/jenkins_home
       volumes:
         - name: jenkins-data
-          emptyDir: {} # Lưu ý: Dữ liệu sẽ mất nếu Pod restart. (Dùng cho lab thì OK)
+          hostPath:
+            path: /data/jenkins # Lưu dữ liệu thật trên máy Master
 ---
 apiVersion: v1
 kind: Service
@@ -37,10 +26,7 @@ metadata:
   name: jenkins
   namespace: jenkins
 spec:
-  type: LoadBalancer
-  selector:
-    app: jenkins
+  type: ClusterIP # Dùng Ingress quản lý
   ports:
-    - name: http
-      port: 8081       # 👈 ĐÃ SỬA: Đổi sang 8081 để không đụng hàng với Backend
-      targetPort: 8080 # Cổng trong container vẫn là 8080 (mặc định của Jenkins)
+    - port: 8081
+      targetPort: 8080

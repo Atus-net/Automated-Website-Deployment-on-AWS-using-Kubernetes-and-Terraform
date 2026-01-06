@@ -1,62 +1,72 @@
-# 1. Tạo VPC (Mạng riêng ảo)
-resource "aws_vpc" "k3s_vpc" {
-  cidr_block           = "10.0.0.0/16"
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+resource "aws_vpc" "this" {
+  cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
-  
-  # 👇 Tag này quan trọng để Stage 2 tìm thấy VPC
-  tags = { Name = "k3s-demo-vpc" }
+  tags                 = { Name = "${var.project}-vpc" }
 }
 
-# 2. Tạo Internet Gateway (Cổng ra Internet)
-resource "aws_internet_gateway" "k3s_igw" {
-  vpc_id = aws_vpc.k3s_vpc.id
-  tags = { Name = "k3s-demo-igw" }
+resource "aws_internet_gateway" "this" {
+  vpc_id = aws_vpc.this.id
+  tags   = { Name = "${var.project}-igw" }
 }
 
-# 3. Tạo Route Table (Bảng chỉ đường ra Internet)
-resource "aws_route_table" "k3s_rt" {
-  vpc_id = aws_vpc.k3s_vpc.id
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = var.public_subnet_cidr
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = true
+  tags                    = { Name = "${var.project}-subnet" }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.this.id
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.k3s_igw.id
+    gateway_id = aws_internet_gateway.this.id
   }
 
-  tags = { Name = "k3s-demo-rt" }
+  tags = { Name = "${var.project}-public-rt" }
 }
 
-# 4. Tạo Subnet (Mạng con public)
-resource "aws_subnet" "k3s_subnet" {
-  vpc_id                  = aws_vpc.k3s_vpc.id
-  cidr_block              = "10.0.1.0/24"
-  map_public_ip_on_launch = true # Tự động cấp IP Public cho máy nằm trong này
-  availability_zone       = "us-east-1a"
-  
-  # 👇 Tag này cực quan trọng: Stage 2 sẽ tìm Subnet theo tên này
-  tags = { Name = "k3s-demo-subnet" }
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
 }
 
-# 5. Gắn Subnet vào Route Table
-resource "aws_route_table_association" "k3s_rta" {
-  subnet_id      = aws_subnet.k3s_subnet.id
-  route_table_id = aws_route_table.k3s_rt.id
-}
+# SG DevOps: SSH + Jenkins/Sonar chỉ từ IP của bạn
+resource "aws_security_group" "devops" {
+  name        = "${var.project}-sg-devops"
+  description = "DevOps node SG"
+  vpc_id      = aws_vpc.this.id
 
-# 6. Tạo Security Group (Tường lửa)
-resource "aws_security_group" "k3s_sg" {
-  name        = "k3s-sg"
-  description = "Allow all traffic for K3s Lab"
-  vpc_id      = aws_vpc.k3s_vpc.id
-
-  # Cho phép tất cả traffic vào (Ingress) - Chỉ dùng cho Lab học tập
   ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
   }
 
-  # Cho phép tất cả traffic ra (Egress)
+  ingress {
+    description = "Jenkins"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
+  ingress {
+    description = "SonarQube (optional)"
+    from_port   = 9000
+    to_port     = 9000
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -64,6 +74,101 @@ resource "aws_security_group" "k3s_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # 👇 Tag này quan trọng: Stage 2 sẽ tìm SG theo tên này
-  tags = { Name = "k3s-sg" }
+  tags = { Name = "${var.project}-sg-devops" }
+}
+
+# SG Master: SSH từ IP bạn, k3s API 6443 từ DevOps + (optional) IP bạn, internal trong VPC
+resource "aws_security_group" "master" {
+  name        = "${var.project}-sg-master"
+  description = "K3s master SG"
+  vpc_id      = aws_vpc.this.id
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
+  ingress {
+    description     = "K3s API from DevOps"
+    from_port       = 6443
+    to_port         = 6443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.devops.id]
+  }
+
+  ingress {
+    description = "K3s API from admin (optional)"
+    from_port   = 6443
+    to_port     = 6443
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
+  ingress {
+    description = "Internal within VPC"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${var.project}-sg-master" }
+}
+
+# SG Worker: SSH từ IP bạn, Web public 80/443, internal trong VPC
+resource "aws_security_group" "worker" {
+  name        = "${var.project}-sg-worker"
+  description = "K3s worker SG"
+  vpc_id      = aws_vpc.this.id
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Internal within VPC"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "${var.project}-sg-worker" }
 }

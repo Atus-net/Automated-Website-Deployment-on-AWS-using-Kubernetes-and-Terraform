@@ -1,16 +1,32 @@
 ---
-- name: "Kết nối máy Worker vào cụm K3s"
-  shell: |
-    curl -sfL https://get.k3s.io | K3S_URL=https://{{ hostvars['master_node']['ansible_host'] }}:6443 \
-    K3S_TOKEN={{ k3s_token }} sh -
-  register: worker_join_result
-  changed_when: "'K3s is up and running' not in worker_join_result.stdout"
-- name: "FIX: Tạo thư mục storage cho Jenkins và cấp quyền 1000"
-  file:
-    path: /var/lib/rancher/k3s/storage/
-    state: directory
-    owner: "1000"
-    group: "1000"
-    mode: '0755'
-    recurse: yes
+- name: Get k3s token from master when missing
   become: true
+  delegate_to: "{{ groups['masters'][0] }}"
+  command: cat /var/lib/rancher/k3s/server/node-token
+  register: token_from_master
+  changed_when: false
+  when: k3s_token is not defined
+
+- name: Set k3s_token fact on worker
+  set_fact:
+    k3s_token: "{{ token_from_master.stdout }}"
+  when: k3s_token is not defined
+
+- name: Wait for Master API reachable from worker (PRIVATE IP)
+  wait_for:
+    host: "{{ hostvars[groups['masters'][0]]['k3s_server_ip'] }}"
+    port: 6443
+    timeout: 180
+    delay: 3
+
+- name: Join worker to K3s cluster (idempotent)
+  become: true
+  shell: |
+    curl -sfL https://get.k3s.io | sh -
+  args:
+    creates: /usr/local/bin/k3s-agent
+  environment:
+    K3S_URL: "https://{{ hostvars[groups['masters'][0]]['k3s_server_ip'] }}:6443"
+    K3S_TOKEN: "{{ k3s_token }}"
+    # gắn node-name + label role ngay lúc join (đỡ phải chạy play label riêng)
+    INSTALL_K3S_EXEC: "agent --node-name {{ inventory_hostname }} --node-label role={{ node_role | default('worker') }}"

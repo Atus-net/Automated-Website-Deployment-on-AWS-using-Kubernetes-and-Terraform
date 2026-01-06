@@ -1,89 +1,151 @@
-# --- PHẦN 1: TÌM LẠI HẠ TẦNG TỪ STAGE 1 (Data Source) ---
+#############################
+# Stage 2 - Apps (EC2 nodes)
+# - Ubuntu 22.04 AMI via data source (no hardcode)
+# - Reads subnet + SG IDs from Stage 1 via terraform_remote_state (local)
+# - Creates: DevOps node + K3s master + K3s workers
+# - Generates ansible/inventory.ini via local_file + template
+#############################
 
-# 1. Tìm Subnet dựa trên Tag Name
-data "aws_subnet" "selected_subnet" {
-  filter {
-    name   = "tag:Name"
-    values = ["k3s-demo-subnet"] # Tên này phải khớp với file network.tf ở Stage 1
-  }
-}
-
-# 2. Tìm Security Group dựa trên Tag Name
-data "aws_security_group" "selected_sg" {
-  filter {
-    name   = "tag:Name"
-    values = ["k3s-sg"] # Tên này phải khớp với file network.tf ở Stage 1
-  }
-}
-
-# 3. Tìm AMI Ubuntu 22.04 mới nhất
-data "aws_ami" "ubuntu" {
+# -----------------------------
+# Data: AMI (Ubuntu 22.04 LTS)
+# -----------------------------
+data "aws_ami" "ubuntu_2204" {
   most_recent = true
   owners      = ["099720109477"] # Canonical
+
   filter {
     name   = "name"
     values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
   }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
 }
 
-# --- PHẦN 2: TẠO MÁY CHỦ (Compute Resources) ---
+# -------------------------------------------------------
+# Read outputs from Stage 1 (local state file)
+# -------------------------------------------------------
+data "terraform_remote_state" "stage1" {
+  backend = "local"
+  config = {
+    path = "../stage1-infra/terraform.tfstate"
+  }
+}
 
-# 1. DevOps Node (Chạy Jenkins, SonarQube)
+locals {
+  subnet_id    = data.terraform_remote_state.stage1.outputs.subnet_id
+  sg_devops_id = data.terraform_remote_state.stage1.outputs.sg_devops_id
+  sg_master_id = data.terraform_remote_state.stage1.outputs.sg_master_id
+  sg_worker_id = data.terraform_remote_state.stage1.outputs.sg_worker_id
+}
+
+# -----------------------------
+# EC2: DevOps node (Jenkins on EC2)
+# -----------------------------
 resource "aws_instance" "devops_node" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "t3.medium"
-  key_name               = var.key_name
-  subnet_id              = data.aws_subnet.selected_subnet.id      # <--- Lấy ID từ data
-  vpc_security_group_ids = [data.aws_security_group.selected_sg.id] # <--- Lấy ID từ data
-  
-  # Đảm bảo đường dẫn tới script setup CICD là chính xác trên máy bạn
-  user_data              = file("../../Scripts/setup-cicd.sh") 
-  
-  tags                   = { Name = "DevOps-Node" }
+  ami           = data.aws_ami.ubuntu_2204.id
+  instance_type = var.devops_instance_type
+  key_name      = var.key_name
+  subnet_id     = local.subnet_id
+
+  vpc_security_group_ids = [local.sg_devops_id]
+
+  # IMDSv2
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  # Bigger disk for Jenkins/Docker
+  root_block_device {
+    volume_type = "gp3"
+    volume_size = 50
+    encrypted   = true
+  }
+
+  user_data = file(var.devops_user_data_path)
+
+  tags = {
+    Name = "DevOps-Node"
+    Role = "devops"
+  }
 }
 
-# 2. Master Node (K3s Control Plane)
+# -----------------------------
+# EC2: K3s master
+# -----------------------------
 resource "aws_instance" "k3s_master" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "t3.medium"
-  key_name               = var.key_name
-  subnet_id              = data.aws_subnet.selected_subnet.id
-  vpc_security_group_ids = [data.aws_security_group.selected_sg.id]
-  tags                   = { Name = "K3s-Master" }
+  ami           = data.aws_ami.ubuntu_2204.id
+  instance_type = var.k3s_instance_type
+  key_name      = var.key_name
+  subnet_id     = local.subnet_id
+
+  vpc_security_group_ids = [local.sg_master_id]
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  tags = {
+    Name = "K3s-Master"
+    Role = "master"
+  }
 }
 
-# 3. Worker Nodes (4 nodes)
+# -----------------------------
+# EC2: K3s workers
+# -----------------------------
 resource "aws_instance" "k3s_worker" {
-  count                  = 4
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "t3.medium"
-  key_name               = var.key_name
-  subnet_id              = data.aws_subnet.selected_subnet.id
-  vpc_security_group_ids = [data.aws_security_group.selected_sg.id]
-  tags                   = { Name = "K3s-Worker-${count.index}" }
+  count         = var.worker_count
+  ami           = data.aws_ami.ubuntu_2204.id
+  instance_type = var.k3s_instance_type
+  key_name      = var.key_name
+  subnet_id     = local.subnet_id
+
+  vpc_security_group_ids = [local.sg_worker_id]
+
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+
+  tags = {
+    Name = "K3s-Worker-${count.index + 1}"
+    Role = "worker"
+  }
 }
 
-# --- PHẦN 3: TẠO FILE INVENTORY CHO ANSIBLE ---
+# -----------------------------
+# Generate Ansible inventory.ini
+# NOTE: workers MUST join via master PRIVATE IP (stable across lab reset)
+# -----------------------------
+locals {
+  worker_ips = [for w in aws_instance.k3s_worker : w.public_ip]
+
+  # map role by index: 0=frontend,1=backend,2=database, others=monitor
+  worker_roles = [
+    for i in range(length(local.worker_ips)) :
+    i == 0 ? "frontend" :
+    i == 1 ? "backend" :
+    i == 2 ? "database" : "monitor"
+  ]
+
+  inventory = templatefile("${path.module}/templates/inventory.tftpl", {
+    devops_ip         = aws_instance.devops_node.public_ip
+    master_ip         = aws_instance.k3s_master.public_ip
+    master_private_ip = aws_instance.k3s_master.private_ip
+
+    worker_ips        = local.worker_ips
+    worker_roles      = local.worker_roles
+    ansible_user      = var.ansible_user
+    private_key       = var.ansible_private_key_path
+  })
+}
 
 resource "local_file" "ansible_inventory" {
-  content = <<-EOT
-    [masters]
-    master_node ansible_host=${aws_instance.k3s_master.public_ip}
-
-    [workers]
-    # Phân chia role cho từng worker để Ansible cài đúng chỗ
-    worker-0 ansible_host=${aws_instance.k3s_worker[0].public_ip} node_role=frontend
-    worker-1 ansible_host=${aws_instance.k3s_worker[1].public_ip} node_role=backend
-    worker-2 ansible_host=${aws_instance.k3s_worker[2].public_ip} node_role=database
-    worker-3 ansible_host=${aws_instance.k3s_worker[3].public_ip} node_role=monitor
-    
-    [devops]
-    devops_node ansible_host=${aws_instance.devops_node.public_ip}
-    
-    [all:vars]
-    ansible_user=ubuntu
-    ansible_ssh_private_key_file=~/.ssh/vockey.pem
-    ansible_ssh_common_args='-o StrictHostKeyChecking=no'
-  EOT
-  filename = "../../ansible/inventory.ini"
+  filename = var.ansible_inventory_path
+  content  = local.inventory
 }

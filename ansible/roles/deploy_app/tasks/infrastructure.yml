@@ -1,69 +1,97 @@
 ---
 # -------------------------------------------------------
-# PHẦN HẠ TẦNG (Infrastructure)
+# INFRA: namespaces + ingress-nginx + shared services
+# Jenkins is NOT deployed in k8s (runs on EC2 devops_node)
+#
+# IMPORTANT:
+# - kubernetes.core.k8s runs on remote host (master)
+# - lookup('file', ...) & first_found run on CONTROLLER (your WSL)
 # -------------------------------------------------------
 
-# 0. Dọn dẹp Traefik (Safety Net - Để chắc chắn cổng 80 trống)
-- name: "Remove Default Traefik (To fix Port 80 conflict)"
+# Resolve manifests directory on CONTROLLER side (WSL), not on remote EC2 master.
+- name: Resolve manifests directory (controller-side)
+  set_fact:
+    manifests_dir: >-
+      {{
+        (lookup('ansible.builtin.first_found', ff_params, errors='ignore') | default(''))
+        | dirname
+      }}
+  vars:
+    ff_params:
+      files:
+        # Prefer: ansible/k3s (most common in your structure)
+        - "k3s/nginx-custom.yaml"
+        # Fallback: repo root /k3s
+        - "../k3s/nginx-custom.yaml"
+        # Fallback: repo root /k8s/base
+        - "../k8s/base/nginx-custom.yaml"
+      paths:
+        - "{{ playbook_dir }}"
+  run_once: true
+  tags: [infra]
+
+- name: Fail if no manifests directory found
+  fail:
+    msg: >-
+      Could not find manifests directory.
+      Expected one of:
+      - {{ playbook_dir }}/k3s
+      - {{ playbook_dir }}/../k3s
+      - {{ playbook_dir }}/../k8s/base
+      (Need nginx-custom.yaml in one of those.)
+  when: manifests_dir in ['', '.', '/']
+  run_once: true
+  tags: [infra]
+
+- name: Remove default Traefik (optional safety)
   shell: |
     kubectl -n kube-system delete service traefik --ignore-not-found
     kubectl -n kube-system delete deployment traefik --ignore-not-found
     kubectl -n kube-system delete job helm-install-traefik --ignore-not-found
   environment:
     KUBECONFIG: /etc/rancher/k3s/k3s.yaml
-  tags: infra
+  changed_when: false
+  tags: [infra]
 
-# 1. Tạo Namespace
-- name: "Tạo Namespace jenkins & k3s-app & ingress-nginx"
+- name: Ensure namespaces exist
   kubernetes.core.k8s:
-    name: "{{ item }}"
-    kind: Namespace
     state: present
-    # 👇 ĐÃ SỬA LỖI CÚ PHÁP Ở DÒNG NÀY
     kubeconfig: "/etc/rancher/k3s/k3s.yaml"
-  with_items:
-    - jenkins
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ item }}"
+  loop:
+    - ingress-nginx
     - k3s-app
-  tags: infra
+  tags: [infra]
 
-# 2. Deploy Ingress Controller (Nginx Custom)
-- name: "Deploy Ingress Controller (Nginx Custom)"
+- name: Deploy ingress-nginx (custom manifest)
   kubernetes.core.k8s:
     state: present
     kubeconfig: "/etc/rancher/k3s/k3s.yaml"
-    definition: "{{ lookup('file', '../../../k3s/nginx-custom.yaml') }}"
-  tags: infra  # 👈 QUAN TRỌNG: Phải có tag này
+    definition: "{{ lookup('file', manifests_dir ~ '/nginx-custom.yaml') }}"
+  tags: [infra]
 
-# 2.1 Xóa Webhook (Fix lỗi Timeout kinh điển)
-- name: "Delete Nginx Validating Webhook (Fix Timeout Error)"
-  shell: "kubectl delete validatingwebhookconfigurations ingress-nginx-admission --ignore-not-found"
+- name: Wait for ingress-nginx controller to be ready
+  shell: kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=300s
   environment:
     KUBECONFIG: /etc/rancher/k3s/k3s.yaml
-  tags: infra
+  register: rollout
+  changed_when: false
+  failed_when: rollout.rc != 0
+  tags: [infra]
 
-# 3. Cài đặt Jenkins
-- name: "Triển khai Jenkins CI/CD"
+- name: Deploy MongoDB + Services + Ingress (from manifests_dir)
   kubernetes.core.k8s:
     state: present
-    namespace: jenkins
     kubeconfig: "/etc/rancher/k3s/k3s.yaml"
-    definition: "{{ lookup('file', item) }}"
-  with_items:
-    - "../../../jenkins/jenkins-sa.yaml"
-    - "../../../jenkins/jenkins.yaml"
-  tags: jenkins
-
-# 4. Cài đặt Database & Services nền tảng
-- name: "Deploy MongoDB, Monitoring & Services"
-  kubernetes.core.k8s:
-    state: present
     namespace: k3s-app
-    kubeconfig: "/etc/rancher/k3s/k3s.yaml"
     definition: "{{ lookup('file', item) }}"
-  with_items:
-    - "../../../k3s/mongo-db.yaml"
-    - "../../../k3s/monitoring.yaml"
-    - "../../../k3s/backend-service.yaml" 
-    - "../../../k3s/frontend-service.yaml"
-    - "../../../k3s/ingress.yaml"         
-  tags: infra
+  loop:
+    - "{{ manifests_dir }}/mongo-db.yaml"
+    - "{{ manifests_dir }}/backend-service.yaml"
+    - "{{ manifests_dir }}/frontend-service.yaml"
+    - "{{ manifests_dir }}/ingress.yaml"
+  tags: [infra]

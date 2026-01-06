@@ -1,91 +1,52 @@
 pipeline {
-    agent any
-
-    environment {
-        DOCKERHUB_USER = "latuss"
-        BACKEND_IMAGE  = "dolciluxe-backend"
-        FRONTEND_IMAGE = "dolciluxe-frontend"
-        IMAGE_TAG      = "${BUILD_NUMBER}"
+  agent any
+  environment {
+    DOCKER_REPO = 'latuss'
+    BACKEND_IMAGE = "${DOCKER_REPO}/backend"
+    FRONTEND_IMAGE = "${DOCKER_REPO}/frontend"
+    TAG = "${BUILD_NUMBER}"
+  }
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
     }
-
-    stages {
-
-        stage("Checkout Source Code") {
-            steps {
-                echo "📥 Checkout source code from GitHub"
-                checkout scm
-            }
-        }
-
-        stage("Build Docker Images") {
-            steps {
-                script {
-                    echo "🐳 Build Backend Image"
-                    sh """
-                        docker build -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${IMAGE_TAG} backend
-                    """
-
-                    echo "🐳 Build Frontend Image"
-                    sh """
-                        docker build -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${IMAGE_TAG} frontend
-                    """
-                }
-            }
-        }
-
-        stage("Security Scan with Trivy") {
-            steps {
-                echo "🔍 Scan Docker images with Trivy"
-                sh """
-                    trivy image --severity HIGH,CRITICAL --exit-code 0 ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${IMAGE_TAG}
-                    trivy image --severity HIGH,CRITICAL --exit-code 0 ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${IMAGE_TAG}
-                """
-            }
-        }
-
-        stage("Push Images to DockerHub") {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-creds',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    sh """
-                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                        docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${IMAGE_TAG}
-                        docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${IMAGE_TAG}
-                    """
-                }
-            }
-        }
-
-        stage("Deploy to K3s using Ansible") {
-            steps {
-                echo "🚀 Deploy application to K3s with Ansible"
-
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: 'ansible-ssh-key',
-                    keyFileVariable: 'SSH_KEY'
-                )]) {
-                    sh """
-                        chmod 600 $SSH_KEY
-                        export ANSIBLE_PRIVATE_KEY_FILE=$SSH_KEY
-
-                        ansible-playbook ansible/site.yml \
-                          --tags deploy \
-                          -e "image_tag=${IMAGE_TAG}"
-                    """
-                }
-            }
-        }
+    stage('Build images') {
+      steps {
+        sh '''
+          docker build -t ${BACKEND_IMAGE}:${TAG} backend
+          docker build -t ${FRONTEND_IMAGE}:${TAG} frontend
+        '''
+      }
     }
-
-    post {
-        success {
-            echo "✅ CI/CD Pipeline completed successfully!"
-        }
-        failure {
-            echo "❌ Pipeline failed. Please check logs."
-        }
+    stage('Scan (Trivy)') {
+      steps {
+        sh '''
+          trivy image --severity HIGH,CRITICAL --exit-code 0 ${BACKEND_IMAGE}:${TAG} || true
+          trivy image --severity HIGH,CRITICAL --exit-code 0 ${FRONTEND_IMAGE}:${TAG} || true
+        '''
+      }
     }
+    stage('Push images') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+          sh '''
+            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
+            docker push ${BACKEND_IMAGE}:${TAG}
+            docker push ${FRONTEND_IMAGE}:${TAG}
+          '''
+        }
+      }
+    }
+    stage('Deploy (Ansible)') {
+      steps {
+        sh '''
+          cd ansible
+          ansible-galaxy collection install -r collections/requirements.yml
+          ansible-playbook -i inventory.ini site.yml --tags infra
+          ansible-playbook -i inventory.ini site.yml --tags backend -e backend_image_tag=${TAG}
+          ansible-playbook -i inventory.ini site.yml --tags frontend -e frontend_image_tag=${TAG}
+        '''
+      }
+    }
+  }
 }

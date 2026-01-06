@@ -5,8 +5,6 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 
-# ❌ ĐÃ XÓA DÒNG ENV VITE_BACKEND_URL (Để code tự nhận diện IP động)
-
 RUN npm run build 
 
 # Stage 2: Serve

@@ -1,22 +1,24 @@
 ---
-# -------------------------------------------------------
-# PHẦN DEPLOY APP
-# -------------------------------------------------------
-
-# 1. Tự động lấy IP Public
-- name: "Detect Public IP of Master Node"
-  shell: curl -s ifconfig.me
-  register: detected_ip
-  changed_when: false
-  tags: [deploy, backend, frontend]
-
-- name: "Load encrypted secrets from vault"
+- name: Load secrets (use Ansible Vault in production)
   include_vars: "../../../vars/secrets.yml"
   no_log: true
   tags: [deploy, backend, frontend]
 
-# 2. Tạo Secret (Chỉ chạy khi deploy Backend)
-- name: "Tạo Kubernetes Secret cho {{ target_service | default('backend') }}"
+- name: Set public_base_ip (worker-0 public IP for ingress URL)
+  set_fact:
+    public_base_ip: "{{ hostvars[groups['workers'][0]].ansible_host }}"
+  tags: [deploy, backend, frontend]
+
+- name: Build services_to_deploy list
+  set_fact:
+    services_to_deploy: >-
+      {{
+        (target_service is defined and target_service | length > 0)
+        | ternary([target_service], ['backend', 'frontend'])
+      }}
+  tags: [deploy, backend, frontend]
+
+- name: Create/Update Kubernetes Secret for backend
   kubernetes.core.k8s:
     state: present
     namespace: k3s-app
@@ -25,11 +27,11 @@
       apiVersion: v1
       kind: Secret
       metadata:
-        name: "{{ target_service | default('backend') }}-secrets"
+        name: "backend-secrets"
       type: Opaque
       stringData:
-        CLIENT_URL: "http://{{ detected_ip.stdout }}"
-        VNP_RETURN_URL: "http://{{ detected_ip.stdout }}/payment-return"
+        CLIENT_URL: "http://{{ public_base_ip }}"
+        VNP_RETURN_URL: "http://{{ public_base_ip }}/payment-return"
         MONGO_URI: "{{ vault_mongo_uri }}"
         JWT_SECRET: "{{ vault_jwt_secret }}"
         JWT_REFRESH_SECRET: "{{ vault_jwt_refresh }}"
@@ -39,18 +41,20 @@
         GOOGLE_CLIENT_ID: "{{ vault_google_id }}"
         GOOGLE_CLIENT_SECRET: "{{ vault_google_secret }}"
         SENDGRID_API_KEY: "{{ vault_sendgrid_key }}"
-  when: target_service is defined and target_service == 'backend'
+  when: "'backend' in services_to_deploy"
   tags: [deploy, backend]
 
-# 3. Cập nhật Code mới nhất (Backend/Frontend)
-- name: "Cập nhật Deployment (Rolling Update) cho {{ target_service }}"
+- name: Apply Deployment(s) via template (Rolling Update)
   kubernetes.core.k8s:
     state: present
     namespace: k3s-app
     kubeconfig: "/etc/rancher/k3s/k3s.yaml"
     definition: "{{ lookup('template', 'deployment.j2') }}"
   vars:
-    service_name: "{{ target_service | default('backend') }}"
+    service_name: "{{ item }}"
     app_image_tag: "{{ image_tag | default('latest') }}"
-    target_node_role: "{{ 'frontend' if target_service == 'frontend' else 'backend' }}"
+    target_node_role: "{{ 'frontend' if item == 'frontend' else 'backend' }}"
+    
+    k8s_image_pull_secret: "{{ image_pull_secret | default('') }}"
+  loop: "{{ services_to_deploy }}"
   tags: [deploy, backend, frontend]

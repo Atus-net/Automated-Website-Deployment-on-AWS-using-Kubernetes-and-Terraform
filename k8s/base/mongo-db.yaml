@@ -26,8 +26,6 @@ spec:
         app: mongo
     spec:
       # 👇 CHỈ ĐỊNH VỀ NHÀ RIÊNG
-      nodeSelector:
-        role: database
       containers:
         - name: mongo
           image: mongo:6.0

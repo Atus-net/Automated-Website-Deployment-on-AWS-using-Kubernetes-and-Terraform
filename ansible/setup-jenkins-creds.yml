@@ -1,0 +1,117 @@
+---
+- name: 1. Lấy Kubeconfig từ Master Node về máy local
+  hosts: masters
+  become: true
+  tasks:
+    - name: Fetch k3s.yaml
+      fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /tmp/k3s-raw.yaml
+        flat: yes
+
+- name: 2. Sửa IP và Nạp vào Jenkins trên DevOps Node
+  hosts: devops
+  become: true
+  vars:
+    master_real_ip: "{{ hostvars[groups['masters'][0]]['ansible_host'] }}"
+  
+  tasks:
+    - name: Copy file k3s.yaml lên DevOps Node
+      copy:
+        src: /tmp/k3s-raw.yaml
+        dest: /tmp/k3s-config.yaml
+        mode: '0644'
+
+    - name: Thay thế 127.0.0.1 bằng IP Public của Master Node
+      replace:
+        path: /tmp/k3s-config.yaml
+        regexp: '127.0.0.1'
+        replace: "{{ master_real_ip }}"
+
+    - name: Tải Jenkins CLI Jar từ Server
+      get_url:
+        url: "http://localhost:8080/jnlpJars/jenkins-cli.jar"
+        dest: "/tmp/jenkins-cli.jar"
+        mode: '0644'
+      register: download_cli
+      retries: 5
+      delay: 10
+      until: download_cli is success
+
+    # --- Đảm bảo Plugin đã được cài ---
+    - name: Cài đặt Plugin Plain Credentials
+      shell: |
+        java -jar /tmp/jenkins-cli.jar -s http://localhost:8080 -auth admin:123456 install-plugin plain-credentials
+      ignore_errors: yes
+
+    - name: Restart Jenkins Service
+      service:
+        name: jenkins
+        state: restarted
+
+    - name: Chờ Jenkins khởi động lại xong
+      wait_for:
+        port: 8080
+        delay: 20
+        timeout: 120
+        msg: "Jenkins chưa khởi động xong sau 120s"
+
+    # --- ĐOẠN CODE GROOVY MỚI (QUAN TRỌNG) ---
+    - name: Tạo Groovy Script để nạp Credential (Dùng SecretBytes)
+      copy:
+        dest: /tmp/create_k3s_cred.groovy
+        content: |
+          import jenkins.model.*
+          import com.cloudbees.plugins.credentials.*
+          import com.cloudbees.plugins.credentials.domains.*
+          import org.jenkinsci.plugins.plaincredentials.impl.*
+          import hudson.util.Secret
+          import java.nio.file.Files
+          import java.nio.file.Paths
+          // Import class SecretBytes mới
+          import com.cloudbees.plugins.credentials.SecretBytes
+
+          def domain = Domain.global()
+          def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
+
+          // 1. Đọc file dưới dạng Byte Array
+          byte[] fileContent = Files.readAllBytes(Paths.get("/tmp/k3s-config.yaml"))
+          
+          // 2. Chuyển đổi sang SecretBytes (Chuẩn mới)
+          def secretBytes = SecretBytes.fromBytes(fileContent)
+
+          // 3. Tạo Credential với Constructor mới
+          // Tham số: (Scope, ID, Description, FileName, SecretBytes)
+          def k3sCred = new FileCredentialsImpl(
+            CredentialsScope.GLOBAL,
+            "k3s-config",          
+            "Auto K3s Config",
+            "k3s.yaml",            
+            secretBytes            
+          )
+
+          // Xóa credential cũ nếu trùng ID
+          def existing = store.getCredentials(domain).find { it.id == "k3s-config" }
+          if (existing) { store.removeCredentials(domain, existing) }
+
+          // Thêm cái mới
+          store.addCredentials(domain, k3sCred)
+          println "✅ Đã nạp thành công Credential ID: k3s-config"
+
+    - name: Chạy script Groovy bằng Jenkins CLI
+      shell: |
+        java -jar /tmp/jenkins-cli.jar -s http://localhost:8080 -auth admin:123456 groovy = < /tmp/create_k3s_cred.groovy
+      register: groovy_result
+
+    - name: In kết quả
+      debug:
+        msg: "{{ groovy_result.stdout }}"
+
+    - name: Dọn dẹp file tạm
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/k3s-config.yaml
+        - /tmp/create_k3s_cred.groovy
+        - /tmp/jenkins-cli.jar

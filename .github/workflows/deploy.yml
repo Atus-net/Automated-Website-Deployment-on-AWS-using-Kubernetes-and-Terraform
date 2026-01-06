@@ -1,86 +1,62 @@
-name: Deploy Dolciluxe
+name: Deploy to K3s
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: [ "main" ] # Kịch bản chạy khi bạn push code vào nhánh main
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 357343206694.dkr.ecr.us-east-1.amazonaws.com # Thay ID của bạn nếu khác
+  REPO_BACKEND: dolciluxe-backend
+  REPO_FRONTEND: dolciluxe-frontend
 
 jobs:
-  # Job kiểm tra và build code
-  verify-and-build:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
 
-      - name: Ensure lock file exists
-        run: |
-          cd backend
-          if [ ! -f "package-lock.json" ]; then
-            npm install --package-lock-only
-          fi
-      # Setup Node.js với cache
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18.x'
-          cache: 'npm'
-          cache-dependency-path: 'backend/package-lock.json'
-      
-      # Kiểm tra backend
-      - name: Verify Backend
-        run: |
-          cd backend
-          npm ci
-      
-      # Kiểm tra frontend
-      - name: Verify Frontend
-        run: |
-          cd frontend
-          npm ci
-
-  # Job triển khai frontend lên Vercel
-  deploy-frontend:
-    needs: verify-and-build
-    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Install Vercel CLI
-        run: npm install -g vercel@latest
-      
-      - name: Deploy to Vercel
-        run: |
-          cd frontend
-          vercel --prod --token ${{ secrets.VERCEL_TOKEN }} --confirm
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    # 1. Lấy code mới nhất về
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-  # Job triển khai backend lên Render
-  deploy-backend:
-    needs: verify-and-build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Deploy to Render
-        run: |
-          curl -X POST "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" \
-          -H "Accept: application/json" \
-          -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}"
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+    # 2. Đăng nhập vào AWS
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-  # Job thông báo kết quả
-  notify:
-    needs: [deploy-frontend, deploy-backend]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Show Deployment URLs
-        run: |
-          echo "✅ Deployment Successful"
-          echo "Frontend: https://your-vercel-url.com"
-          echo "Backend: https://${{ secrets.RENDER_SERVICE_ID }}.onrender.com"
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    # 3. Build & Push BACKEND
+    - name: Build & Push Backend
+      run: |
+        docker build -t $ECR_REGISTRY/$REPO_BACKEND:${{ github.sha }} ./backend
+        docker push $ECR_REGISTRY/$REPO_BACKEND:${{ github.sha }}
+
+    # 4. Build & Push FRONTEND
+    - name: Build & Push Frontend
+      run: |
+        docker build -t $ECR_REGISTRY/$REPO_FRONTEND:${{ github.sha }} ./frontend
+        docker push $ECR_REGISTRY/$REPO_FRONTEND:${{ github.sha }}
+
+    # 5. SSH vào EC2 và cập nhật K3s
+    - name: Deploy to K3s via SSH
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ubuntu # User mặc định của AWS Ubuntu
+        key: ${{ secrets.EC2_SSH_KEY }}
+        script: |
+          # Cập nhật ảnh mới cho Backend
+          kubectl set image deployment/backend backend=${{ env.ECR_REGISTRY }}/${{ env.REPO_BACKEND }}:${{ github.sha }}
+          
+          # Cập nhật ảnh mới cho Frontend
+          kubectl set image deployment/frontend frontend=${{ env.ECR_REGISTRY }}/${{ env.REPO_FRONTEND }}:${{ github.sha }}
+          
+          # Chờ cập nhật xong
+          kubectl rollout status deployment/backend
+          kubectl rollout status deployment/frontend
