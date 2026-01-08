@@ -1,90 +1,112 @@
 pipeline {
-    agent {
-        docker {
-            image 'docker:latest'
-            args '-v /var/run/docker.sock:/var/run/docker.sock -v /usr/bin/docker:/usr/bin/docker'
-        }
-    }
+    agent any
     
     environment {
         DOCKERHUB_USER = "latuss"
         BACKEND_IMAGE  = "dolciluxe-backend"
         FRONTEND_IMAGE = "dolciluxe-frontend"
-        K8S_NAMESPACE  = "web-app"
+        K8S_NAMESPACE  = "k3s-app"
     }
 
     stages {
-        stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Build & Push Backend') {
+        stage('Setup Environment') {
             steps {
                 script {
-                    dir('backend') {
-                        sh """
-                            docker build -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest .
-                            docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest
-                        """
-                    }
+                    // Fix Docker permissions
+                    sh '''
+                        # Tạo docker config cho jenkins
+                        mkdir -p /var/lib/jenkins/.docker
+                        chown -R jenkins:jenkins /var/lib/jenkins/.docker
+                        chmod 755 /var/lib/jenkins/.docker
+                        
+                        # Test Docker
+                        docker version || echo "Docker not accessible"
+                        
+                        # Check current directory
+                        pwd
+                        ls -la
+                    '''
                 }
             }
         }
 
-        stage('Build & Push Frontend') {
-            steps {
-                script {
-                    dir('frontend') {
-                        sh """
-                            docker build -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest .
-                            docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Login to DockerHub') {
+        stage('DockerHub Login') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'docker-hub',
                     usernameVariable: 'DOCKER_USER',
                     passwordVariable: 'DOCKER_PASS'
                 )]) {
-                    sh """
-                        echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
-                    """
+                    sh '''
+                        # Set Docker config path
+                        export DOCKER_CONFIG="/var/lib/jenkins/.docker"
+                        
+                        # Login to DockerHub
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                        
+                        # Verify login
+                        cat /var/lib/jenkins/.docker/config.json | grep auth
+                    '''
                 }
+            }
+        }
+
+        stage('Build Backend') {
+            steps {
+                dir('backend') {
+                    sh '''
+                        # Build with explicit config path
+                        DOCKER_CONFIG="/var/lib/jenkins/.docker" docker build -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest .
+                        
+                        # Tag also with build number
+                        docker tag ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}
+                    '''
+                }
+            }
+        }
+
+        stage('Build Frontend') {
+            steps {
+                dir('frontend') {
+                    sh '''
+                        DOCKER_CONFIG="/var/lib/jenkins/.docker" docker build -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest .
+                        docker tag ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                    '''
+                }
+            }
+        }
+
+        stage('Push Images') {
+            steps {
+                sh '''
+                    # Push backend
+                    DOCKER_CONFIG="/var/lib/jenkins/.docker" docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest
+                    DOCKER_CONFIG="/var/lib/jenkins/.docker" docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}
+                    
+                    # Push frontend
+                    DOCKER_CONFIG="/var/lib/jenkins/.docker" docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest
+                    DOCKER_CONFIG="/var/lib/jenkins/.docker" docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                '''
             }
         }
 
         stage('Deploy') {
             steps {
-                script {
-                    dir('k8s') {
-                        sh """
-                            # Update image tags
-                            sed -i "s|image:.*${BACKEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest|g" backend-deployment.yaml
-                            sed -i "s|image:.*${FRONTEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest|g" frontend-deployment.yaml
-                            
-                            # Deploy
-                            kubectl apply -f . -n ${K8S_NAMESPACE}
-                            
-                            # Verify
-                            kubectl rollout status deployment/backend -n ${K8S_NAMESPACE} --timeout=120s
-                            kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE} --timeout=120s
-                        """
-                    }
+                dir('k8s') {
+                    sh '''
+                        # Update image tags in manifests
+                        sed -i "s|image:.*${BACKEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}|g" backend-deployment.yaml
+                        sed -i "s|image:.*${FRONTEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}|g" frontend-deployment.yaml
+                        
+                        # Apply deployments
+                        kubectl apply -f backend-deployment.yaml -n ${K8S_NAMESPACE}
+                        kubectl apply -f frontend-deployment.yaml -n ${K8S_NAMESPACE}
+                        
+                        # Check status
+                        kubectl get pods -n ${K8S_NAMESPACE}
+                    '''
                 }
             }
-        }
-    }
-    
-    post {
-        always {
-            sh 'docker logout || true'
         }
     }
 }
