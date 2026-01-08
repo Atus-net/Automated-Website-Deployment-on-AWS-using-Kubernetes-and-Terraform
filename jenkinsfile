@@ -1,11 +1,16 @@
 pipeline {
-    agent any
-
+    agent {
+        docker {
+            image 'docker:latest'
+            args '-v /var/run/docker.sock:/var/run/docker.sock -v /usr/bin/docker:/usr/bin/docker'
+        }
+    }
+    
     environment {
         DOCKERHUB_USER = "latuss"
-        BACKEND_IMAGE = "my-backend"
-        FRONTEND_IMAGE = "my-frontend"
-        K8S_NAMESPACE = "web-app"
+        BACKEND_IMAGE  = "dolciluxe-backend"
+        FRONTEND_IMAGE = "dolciluxe-frontend"
+        K8S_NAMESPACE  = "web-app"
     }
 
     stages {
@@ -15,21 +20,41 @@ pipeline {
             }
         }
 
-        stage('Build & Push') {
+        stage('Build & Push Backend') {
             steps {
                 script {
-                    // Build and push backend
+                    dir('backend') {
+                        sh """
+                            docker build -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest .
+                            docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Build & Push Frontend') {
+            steps {
+                script {
+                    dir('frontend') {
+                        sh """
+                            docker build -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest .
+                            docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Login to DockerHub') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
                     sh """
-                        cd backend
-                        docker build -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest .
-                        docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest
-                    """
-                    
-                    // Build and push frontend
-                    sh """
-                        cd frontend
-                        docker build -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest .
-                        docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest
+                        echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
                     """
                 }
             }
@@ -38,25 +63,28 @@ pipeline {
         stage('Deploy') {
             steps {
                 script {
-                    // Update and deploy
-                    sh """
-                        cd k8s
-                        
-                        # Update image tags
-                        sed -i "s|image:.*${BACKEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest|g" backend-deployment.yaml
-                        sed -i "s|image:.*${FRONTEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest|g" frontend-deployment.yaml
-                        
-                        # Deploy
-                        kubectl apply -f . -n ${K8S_NAMESPACE}
-                        
-                        # Verify
-                        kubectl rollout status deployment/backend -n ${K8S_NAMESPACE}
-                        kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE}
-                        
-                        echo "✅ Deployed successfully!"
-                    """
+                    dir('k8s') {
+                        sh """
+                            # Update image tags
+                            sed -i "s|image:.*${BACKEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest|g" backend-deployment.yaml
+                            sed -i "s|image:.*${FRONTEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest|g" frontend-deployment.yaml
+                            
+                            # Deploy
+                            kubectl apply -f . -n ${K8S_NAMESPACE}
+                            
+                            # Verify
+                            kubectl rollout status deployment/backend -n ${K8S_NAMESPACE} --timeout=120s
+                            kubectl rollout status deployment/frontend -n ${K8S_NAMESPACE} --timeout=120s
+                        """
+                    }
                 }
             }
+        }
+    }
+    
+    post {
+        always {
+            sh 'docker logout || true'
         }
     }
 }
