@@ -11,7 +11,6 @@ devops_node ansible_host=${devops_ip} ansible_user=${ansible_user} ansible_ssh_p
 
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3
-ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=30 -o ServerAliveCountMax=10'
 ansible_become=true
 ansible_become_method=sudo

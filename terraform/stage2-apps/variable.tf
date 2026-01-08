@@ -18,10 +18,10 @@ variable "key_name" {
   default = "vockey"
 }
 
-# Lab hay giới hạn: để nhỏ trước cho chắc
+
 variable "devops_instance_type" {
   type    = string
-  default = "t3.small"
+  default = "t3.medium"
 }
 
 variable "k3s_instance_type" {
@@ -31,7 +31,7 @@ variable "k3s_instance_type" {
 
 variable "worker_count" {
   type    = number
-  default = 2
+  default = 3
 }
 
 variable "devops_user_data_path" {

@@ -1,0 +1,112 @@
+---
+- name: "INTEGRATION: Connect Jenkins, SonarQube & DockerHub"
+  hosts: devops
+  become: yes
+  gather_facts: yes
+
+  vars_prompt:
+    - name: jenkins_current_password
+      prompt: "Nhập mật khẩu Jenkins ADMIN hiện tại (Nếu mới cài thì xem trong initialAdminPassword)"
+      private: no
+    - name: sonar_current_password
+      prompt: "Nhập mật khẩu SonarQube ADMIN hiện tại (Mặc định là admin)"
+      default: "admin"
+      private: yes
+    - name: dockerhub_user
+      prompt: "Nhập DockerHub Username"
+      default: "latuss"
+      private: no
+    - name: dockerhub_pass
+      prompt: "Nhập DockerHub Password"
+      private: yes
+    - name: vault_pass
+      prompt: "Nhập mật khẩu giải mã file secrets.yml (Ansible Vault)"
+      private: yes
+
+  tasks:
+    # -------------------------------------------------------
+    # GIAI ĐOẠN 0: CHUẨN BỊ (Tags: init)
+    # -------------------------------------------------------
+    - name: "INIT: Đợi dịch vụ sẵn sàng"
+      wait_for:
+        port: "{{ item }}"
+        host: 127.0.0.1
+        timeout: 120
+      loop: [8080, 9000]
+      tags: [init]
+
+    - name: "INIT: Tải Jenkins CLI JAR"
+      get_url:
+        url: "{{ jenkins_url_internal }}/jnlpJars/jenkins-cli.jar"
+        dest: "/tmp/jenkins-cli.jar"
+        mode: '0755'
+      tags: [init]
+
+    # -------------------------------------------------------
+    # GIAI ĐOẠN 1: SONARQUBE - LẤY TOKEN (Tags: sonarqube)
+    # -------------------------------------------------------
+    - name: "SONAR: Tạo Analysis Token"
+      uri:
+        url: "{{ sonar_url_internal }}/api/user_tokens/generate"
+        method: POST
+        user: admin
+        password: "{{ sonar_current_password }}"
+        force_basic_auth: yes
+        body_format: form-urlencoded
+        body:
+          name: "jenkins-token-{{ ansible_date_time.epoch }}"
+      register: sonar_token_res
+      tags: [sonarqube]
+
+    # -------------------------------------------------------
+    # GIAI ĐOẠN 2: JENKINS - TÍCH HỢP CREDENTIALS (Tags: jenkins)
+    # -------------------------------------------------------
+    - name: "JENKINS: Cập nhật DockerHub, Sonar, Vault Credentials"
+      shell: |
+        cat <<EOF | java -jar /tmp/jenkins-cli.jar -s {{ jenkins_url_internal }} -auth admin:{{ jenkins_current_password }} groovy =
+        import jenkins.model.*
+        import com.cloudbees.plugins.credentials.*
+        import com.cloudbees.plugins.credentials.domains.*
+        import com.cloudbees.plugins.credentials.impl.*
+        import org.jenkinsci.plugins.plaincredentials.impl.*
+        import hudson.util.Secret
+
+        def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
+
+        def updateCred = { cred ->
+            def existing = store.getCredentials(Domain.global()).find { it.id == cred.id }
+            if (existing) store.updateCredentials(Domain.global(), existing, cred)
+            else store.addCredentials(Domain.global(), cred)
+        }
+
+        // 1. DockerHub
+        updateCred(new UsernamePasswordCredentialsImpl(CredentialsScope.GLOBAL, "dockerhub-creds", "DockerHub", "{{ dockerhub_user }}", "{{ dockerhub_pass }}"))
+
+        // 2. Sonar Token
+        if ("{{ sonar_token_res.json is defined }}") {
+            updateCred(new StringCredentialsImpl(CredentialsScope.GLOBAL, "sonar-token", "Sonar Token", Secret.fromString("{{ sonar_token_res.json.token }}")))
+        }
+
+        // 3. Vault Pass
+        updateCred(new StringCredentialsImpl(CredentialsScope.GLOBAL, "ansible-vault-pass", "Vault Pass", Secret.fromString("{{ vault_pass }}")))
+        EOF
+      tags: [jenkins]
+
+    # -------------------------------------------------------
+    # GIAI ĐOẠN 3: JENKINS - CẤU HÌNH SONAR SERVER (Tags: config)
+    # -------------------------------------------------------
+    - name: "CONFIG: Cấu hình SonarQube Server URL"
+      shell: |
+        cat <<EOF | java -jar /tmp/jenkins-cli.jar -s {{ jenkins_url_internal }} -auth admin:{{ jenkins_current_password }} groovy =
+        import hudson.plugins.sonar.*
+        import hudson.plugins.sonar.model.*
+        def descriptor = Jenkins.getInstance().getDescriptorByType(SonarGlobalConfiguration.class)
+        def inst = new SonarInstallation("sonar-server", "{{ sonar_url_public }}", "sonar-token", "", "", null, null, null, null)
+        descriptor.setInstallations(inst)
+        descriptor.save()
+        EOF
+      tags: [config]
+
+    - name: "SUMMARY: Hoàn tất"
+      debug:
+        msg: "Tất cả công cụ đã được kết nối thành công. Bạn có thể bắt đầu chạy Pipeline!"

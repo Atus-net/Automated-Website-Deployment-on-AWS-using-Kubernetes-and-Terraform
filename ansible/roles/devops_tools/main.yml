@@ -1,0 +1,45 @@
+---
+# 1. Cấu hình hệ thống cho SonarQube
+- name: Set vm.max_map_count for SonarQube
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: '262144'
+    state: present
+    reload: yes
+
+# 2. Cài đặt Trivy (Sử dụng Repository chính thức)
+- name: Install Trivy dependencies
+  ansible.builtin.apt:
+    name: [wget, apt-transport-https, gnupg, lsb-release]
+    state: present
+
+- name: Add Trivy GPG key
+  ansible.builtin.apt_key:
+    url: https://aquasecurity.github.io/trivy-repo/deb/public.key
+    state: present
+
+- name: Add Trivy repository
+  ansible.builtin.apt_repository:
+    repo: "deb https://aquasecurity.github.io/trivy-repo/deb {{ ansible_distribution_release }} main"
+    state: present
+
+- name: Install Trivy
+  ansible.builtin.apt:
+    name: trivy
+    state: present
+    update_cache: yes
+
+# 3. Chạy SonarQube bằng Docker Module của Ansible
+- name: Ensure SonarQube container is running
+  community.docker.docker_container:
+    name: sonarqube
+    image: sonarqube:lts-community
+    state: started
+    restart_policy: always
+    published_ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+  tags: [sonarqube]

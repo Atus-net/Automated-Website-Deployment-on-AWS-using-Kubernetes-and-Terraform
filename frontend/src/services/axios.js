@@ -1,8 +1,6 @@
 import axios from 'axios';
 
-// --- [ĐOẠN SỬA QUAN TRỌNG] ---
-// Thay vì lấy từ biến môi trường (cứng), ta lấy động theo trình duyệt
-// Ví dụ: Web chạy ở IP 1.2.3.4 thì Backend sẽ là http://1.2.3.4:8080
+
 const BE_BASE_URL = `${window.location.protocol}//${window.location.hostname}:8080`;
 
 const response = axios.create({
@@ -10,6 +8,7 @@ const response = axios.create({
   withCredentials: true,
 });
 
+export default response;
 // Interceptor REQUEST
 response.interceptors.request.use((config) => {
   const token = localStorage.getItem('access_token');

@@ -1,0 +1,71 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKERHUB_USER = "latuss" // Thay bằng ID của bạn
+        BACKEND_IMAGE  = "my-backend"
+        FRONTEND_IMAGE = "my-frontend"
+        SONAR_SERVER   = "sonar-server"
+    }
+
+    stages {
+        stage('1. Checkout Code') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('2. SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv("${SONAR_SERVER}") {
+                    // Quét mã nguồn và đẩy lên cổng 9000
+                    sh "echo 'Running Sonar Scan...'"
+                    // Lệnh thực tế phụ thuộc vào ngôn ngữ (mvn, npm, sonar-scanner)
+                }
+            }
+        }
+
+        stage('3. Build Docker Images') {
+            steps {
+                script {
+                    sh "docker build -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER} ./backend"
+                    sh "docker build -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER} ./frontend"
+                }
+            }
+        }
+
+        stage('4. Trivy Security Scan') {
+            steps {
+                // Quét Image, dừng Pipeline nếu có lỗi HIGH hoặc CRITICAL
+                sh "trivy image --severity HIGH,CRITICAL --exit-code 1 ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}"
+                sh "trivy image --severity HIGH,CRITICAL --exit-code 1 ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}"
+            }
+        }
+
+        stage('5. Push to DockerHub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-hub', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
+                    sh "echo \$PASS | docker login -u \$USER --password-stdin"
+                    sh "docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}"
+                    sh "docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}"
+                }
+            }
+        }
+
+        stage('6. Deploy to K3s') {
+            steps {
+                // Sử dụng kubeconfig đã được Ansible thiết lập sẵn tại /var/lib/jenkins/.kube/config
+                sh "kubectl set image deployment/backend backend=${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER} -n k3s-app"
+                sh "kubectl set image deployment/frontend frontend=${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER} -n k3s-app"
+                sh "kubectl rollout status deployment/backend -n k3s-app"
+            }
+        }
+    }
+
+    post {
+        always {
+            sh "docker logout"
+            cleanWs()
+        }
+    }
+}

@@ -9,6 +9,10 @@
     public_base_ip: "{{ hostvars[groups['workers'][0]].ansible_host }}"
   tags: [deploy, backend, frontend]
 
+- name: Set ingress_public_ip (use first worker public IP)
+  set_fact:
+    ingress_public_ip: "{{ hostvars[groups['workers'][0]].ansible_host }}"
+
 - name: Build services_to_deploy list
   set_fact:
     services_to_deploy: >-
@@ -30,17 +34,20 @@
         name: "backend-secrets"
       type: Opaque
       stringData:
-        CLIENT_URL: "http://{{ public_base_ip }}"
-        VNP_RETURN_URL: "http://{{ public_base_ip }}/payment-return"
+        CLIENT_URL: "http://{{ ingress_public_ip }}"
+        VNP_RETURN_URL: "http://{{ ingress_public_ip }}/payment-return"
         MONGO_URI: "{{ vault_mongo_uri }}"
         JWT_SECRET: "{{ vault_jwt_secret }}"
         JWT_REFRESH_SECRET: "{{ vault_jwt_refresh }}"
+        JWT_EXPIRES_IN: "15m"
+        JWT_REFRESH_EXPIRES_IN: "7d"
         SESSION_SECRET: "{{ vault_session_secret }}"
         VNP_TMNCODE: "{{ vault_vnp_tmncode }}"
         VNP_HASHSECRET: "{{ vault_vnp_hash }}"
         GOOGLE_CLIENT_ID: "{{ vault_google_id }}"
         GOOGLE_CLIENT_SECRET: "{{ vault_google_secret }}"
         SENDGRID_API_KEY: "{{ vault_sendgrid_key }}"
+        GOOGLE_CALLBACK_URL: "http://{{ ingress_public_ip }}/api/auth/google/callback"
   when: "'backend' in services_to_deploy"
   tags: [deploy, backend]
 

@@ -1,4 +1,11 @@
 ---
+- name: Set master_ip fact (prefer private IP)
+  set_fact:
+    master_ip: >-
+      {{ hostvars[groups['masters'][0]].k3s_server_ip
+         | default(hostvars[groups['masters'][0]].ansible_default_ipv4.address)
+         | default(hostvars[groups['masters'][0]].ansible_host) }}
+
 - name: Get k3s token from master when missing
   become: true
   delegate_to: "{{ groups['masters'][0] }}"
@@ -14,10 +21,17 @@
 
 - name: Wait for Master API reachable from worker (PRIVATE IP)
   wait_for:
-    host: "{{ hostvars[groups['masters'][0]]['k3s_server_ip'] }}"
+    host: "{{ master_ip }}"
     port: 6443
-    timeout: 180
+    timeout: 300
     delay: 3
+
+# Nếu worker từng join lỗi/treo, dọn service trước cho sạch
+- name: Stop k3s-agent if exists (safe)
+  become: true
+  shell: |
+    systemctl stop k3s-agent 2>/dev/null || true
+  changed_when: false
 
 - name: Join worker to K3s cluster (idempotent)
   become: true
@@ -26,7 +40,25 @@
   args:
     creates: /usr/local/bin/k3s-agent
   environment:
-    K3S_URL: "https://{{ hostvars[groups['masters'][0]]['k3s_server_ip'] }}:6443"
+    K3S_URL: "https://{{ master_ip }}:6443"
     K3S_TOKEN: "{{ k3s_token }}"
-    # gắn node-name + label role ngay lúc join (đỡ phải chạy play label riêng)
+    # Gắn node-name + label role ngay lúc join
     INSTALL_K3S_EXEC: "agent --node-name {{ inventory_hostname }} --node-label role={{ node_role | default('worker') }}"
+
+- name: Enable + restart k3s-agent
+  become: true
+  shell: |
+    systemctl daemon-reload
+    systemctl enable k3s-agent
+    systemctl restart k3s-agent
+  changed_when: false
+
+- name: Wait k3s-agent active
+  become: true
+  shell: |
+    systemctl is-active --quiet k3s-agent
+  register: k3s_agent_active
+  retries: 30
+  delay: 5
+  until: k3s_agent_active.rc == 0
+  changed_when: false
