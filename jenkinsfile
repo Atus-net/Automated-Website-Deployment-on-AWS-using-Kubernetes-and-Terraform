@@ -2,70 +2,339 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_USER = "latuss" // Thay bằng ID của bạn
+        DOCKERHUB_USER = "latuss"
         BACKEND_IMAGE  = "my-backend"
         FRONTEND_IMAGE = "my-frontend"
-        SONAR_SERVER   = "sonar-server"
+        K8S_NAMESPACE  = "k3s-app"
+        
+        // SonarQube configuration
+        SONAR_HOST_URL = "http://3.91.14.1:9000"
+        SONAR_PROJECT_KEY = "dolcluxi"
+        SONAR_TOKEN = credentials('sonar-token') // Store token in Jenkins credentials
     }
 
     stages {
         stage('1. Checkout Code') {
             steps {
                 checkout scm
+                
+                // Show commit info
+                sh '''
+                    echo "Repository: ${GIT_URL}"
+                    echo "Branch: ${GIT_BRANCH}"
+                    echo "Commit: ${GIT_COMMIT}"
+                    echo "Build Number: ${BUILD_NUMBER}"
+                '''
             }
         }
 
-        stage('2. SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv("${SONAR_SERVER}") {
-                    // Quét mã nguồn và đẩy lên cổng 9000
-                    sh "echo 'Running Sonar Scan...'"
-                    // Lệnh thực tế phụ thuộc vào ngôn ngữ (mvn, npm, sonar-scanner)
-                }
-            }
-        }
-
-        stage('3. Build Docker Images') {
+        stage('2. Prepare Environment') {
             steps {
                 script {
-                    sh "docker build -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER} ./backend"
-                    sh "docker build -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER} ./frontend"
+                    echo "Checking project structure..."
+                    
+                    // Check required directories and files
+                    def files = [
+                        'backend/Dockerfile': 'Backend',
+                        'frontend/Dockerfile': 'Frontend',
+                        '.': 'Project root'
+                    ]
+                    
+                    files.each { file, name ->
+                        if (fileExists(file)) {
+                            echo "✓ ${name} directory/file exists"
+                        } else {
+                            error "✗ ${name} directory/file not found: ${file}"
+                        }
+                    }
                 }
             }
         }
 
-        stage('4. Trivy Security Scan') {
+        stage('3. SonarQube Analysis') {
             steps {
-                // Quét Image, dừng Pipeline nếu có lỗi HIGH hoặc CRITICAL
-                sh "trivy image --severity HIGH,CRITICAL --exit-code 1 ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}"
-                sh "trivy image --severity HIGH,CRITICAL --exit-code 1 ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}"
-            }
-        }
-
-        stage('5. Push to DockerHub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'docker-hub', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
-                    sh "echo \$PASS | docker login -u \$USER --password-stdin"
-                    sh "docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}"
-                    sh "docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}"
+                script {
+                    echo "Starting SonarQube analysis..."
+                    
+                    // Install sonar-scanner if not present (optional)
+                    sh '''
+                        if ! command -v sonar-scanner &> /dev/null; then
+                            echo "Installing sonar-scanner..."
+                            wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.8.0.2856-linux.zip
+                            unzip sonar-scanner-cli-4.8.0.2856-linux.zip
+                            export PATH=$PWD/sonar-scanner-4.8.0.2856-linux/bin:$PATH
+                        fi
+                    '''
+                    
+                    // Run sonar-scanner with credentials from Jenkins
+                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_AUTH_TOKEN')]) {
+                        sh """
+                            sonar-scanner \
+                                -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                -Dsonar.sources=. \
+                                -Dsonar.host.url=${SONAR_HOST_URL} \
+                                -Dsonar.login=${SONAR_AUTH_TOKEN} \
+                                -Dsonar.projectVersion=${BUILD_NUMBER} \
+                                -Dsonar.sourceEncoding=UTF-8 \
+                                -Dsonar.scm.provider=git \
+                                -Dsonar.qualitygate.wait=true \
+                                -Dsonar.qualitygate.timeout=300
+                        """
+                    }
+                    
+                    echo "SonarQube analysis completed!"
                 }
             }
         }
 
-        stage('6. Deploy to K3s') {
+        stage('4. Build Docker Images') {
             steps {
-                // Sử dụng kubeconfig đã được Ansible thiết lập sẵn tại /var/lib/jenkins/.kube/config
-                sh "kubectl set image deployment/backend backend=${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER} -n k3s-app"
-                sh "kubectl set image deployment/frontend frontend=${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER} -n k3s-app"
-                sh "kubectl rollout status deployment/backend -n k3s-app"
+                script {
+                    echo "Building Docker images..."
+                    
+                    // Build backend with cache optimization
+                    sh """
+                        docker build \
+                            -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER} \
+                            -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest \
+                            --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                            ./backend
+                    """
+                    
+                    // Build frontend with cache optimization
+                    sh """
+                        docker build \
+                            -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER} \
+                            -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest \
+                            --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                            ./frontend
+                    """
+                    
+                    // List built images
+                    sh """
+                        echo "Built images:"
+                        docker images | grep ${DOCKERHUB_USER}
+                    """
+                }
+            }
+        }
+
+        stage('5. Trivy Security Scan') {
+            steps {
+                script {
+                    echo "Running security scans with Trivy..."
+                    
+                    timeout(time: 15, unit: 'MINUTES') {
+                        // Scan backend image
+                        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                            sh """
+                                trivy image \
+                                    --severity HIGH,CRITICAL \
+                                    --exit-code 1 \
+                                    --format table \
+                                    --no-progress \
+                                    ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}
+                            """
+                        }
+                        
+                        // Scan frontend image
+                        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+                            sh """
+                                trivy image \
+                                    --severity HIGH,CRITICAL \
+                                    --exit-code 1 \
+                                    --format table \
+                                    --no-progress \
+                                    ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                            """
+                        }
+                        
+                        // Generate HTML reports (optional)
+                        sh """
+                            trivy image \
+                                --format template \
+                                --template "@/usr/local/share/trivy/templates/html.tpl" \
+                                --output backend-security-report.html \
+                                ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER} || true
+                            
+                            trivy image \
+                                --format template \
+                                --template "@/usr/local/share/trivy/templates/html.tpl" \
+                                --output frontend-security-report.html \
+                                ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER} || true
+                        """
+                        
+                        // Archive security reports
+                        archiveArtifacts artifacts: '*-security-report.html', allowEmptyArchive: true
+                    }
+                }
+            }
+        }
+
+        stage('6. Push to DockerHub') {
+            steps {
+                script {
+                    echo "Pushing images to Docker Hub..."
+                    
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'docker-hub',
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASSWORD'
+                        )
+                    ]) {
+                        sh """
+                            echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin
+                            
+                            # Push backend images
+                            docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}
+                            docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest
+                            
+                            # Push frontend images
+                            docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                            docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest
+                            
+                            echo "Images pushed successfully!"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('7. Deploy to K3s') {
+            steps {
+                script {
+                    echo "Deploying to K3s cluster..."
+                    
+                    // Set KUBECONFIG path (adjust based on your Ansible setup)
+                    withEnv(['KUBECONFIG=/var/lib/jenkins/.kube/config']) {
+                        // Verify cluster connection
+                        sh """
+                            kubectl cluster-info
+                            kubectl get nodes
+                        """
+                        
+                        // Update backend deployment with rollout strategy
+                        sh """
+                            kubectl set image deployment/backend \
+                                backend=${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER} \
+                                -n ${K8S_NAMESPACE} \
+                                --record
+                            
+                            kubectl rollout status deployment/backend \
+                                -n ${K8S_NAMESPACE} \
+                                --timeout=300s
+                        """
+                        
+                        // Update frontend deployment
+                        sh """
+                            kubectl set image deployment/frontend \
+                                frontend=${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER} \
+                                -n ${K8S_NAMESPACE} \
+                                --record
+                            
+                            kubectl rollout status deployment/frontend \
+                                -n ${K8S_NAMESPACE} \
+                                --timeout=300s
+                        """
+                        
+                        // Check rollout history
+                        sh """
+                            echo "Backend rollout history:"
+                            kubectl rollout history deployment/backend -n ${K8S_NAMESPACE}
+                            
+                            echo "Frontend rollout history:"
+                            kubectl rollout history deployment/frontend -n ${K8S_NAMESPACE}
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('8. Verify Deployment') {
+            steps {
+                script {
+                    echo "Verifying deployment..."
+                    
+                    withEnv(['KUBECONFIG=/var/lib/jenkins/.kube/config']) {
+                        // Check deployment status
+                        sh """
+                            echo "=== Deployment Status ==="
+                            kubectl get deployments -n ${K8S_NAMESPACE} -o wide
+                            
+                            echo "=== Pod Status ==="
+                            kubectl get pods -n ${K8S_NAMESPACE} -o wide
+                            
+                            echo "=== Service Status ==="
+                            kubectl get services -n ${K8S_NAMESPACE} -o wide
+                            
+                            echo "=== Pod Logs (Backend) ==="
+                            kubectl logs -n ${K8S_NAMESPACE} -l app=backend --tail=20 || true
+                            
+                            echo "=== Pod Logs (Frontend) ==="
+                            kubectl logs -n ${K8S_NAMESPACE} -l app=frontend --tail=20 || true
+                        """
+                        
+                        // Health check (adjust URLs based on your service)
+                        sh """
+                            # Example health checks
+                            # BACKEND_URL=\$(kubectl get svc backend -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                            # FRONTEND_URL=\$(kubectl get svc frontend -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                            # echo "Backend URL: http://\${BACKEND_URL}:8080/health"
+                            # echo "Frontend URL: http://\${FRONTEND_URL}:80"
+                        """
+                    }
+                }
             }
         }
     }
 
     post {
         always {
-            sh "docker logout"
-            cleanWs()
+            script {
+                // Cleanup
+                sh """
+                    docker logout || true
+                    docker system prune -f || true
+                """
+                
+                cleanWs()
+                
+                // Update build description
+                def duration = currentBuild.durationString
+                currentBuild.description = "Build #${BUILD_NUMBER} | ${duration}"
+            }
+        }
+        success {
+            script {
+                echo "✅ Pipeline completed successfully!"
+                
+                // You can add notifications here:
+                // - Email
+                // - Slack
+                // - Teams
+                // - etc.
+                
+                // Example: Send to Slack
+                // slackSend(color: 'good', message: "Pipeline ${JOB_NAME} #${BUILD_NUMBER} succeeded!")
+            }
+        }
+        failure {
+            script {
+                echo "❌ Pipeline failed!"
+                
+                // Debug info
+                sh """
+                    echo "=== Failed stage: ${STAGE_NAME} ==="
+                    echo "=== Build URL: ${BUILD_URL} ==="
+                """
+                
+                // Failure notifications
+                // slackSend(color: 'danger', message: "Pipeline ${JOB_NAME} #${BUILD_NUMBER} failed!")
+            }
+        }
+        unstable {
+            echo "⚠️ Pipeline is unstable (e.g., SonarQube quality gate failed)"
         }
     }
 }
