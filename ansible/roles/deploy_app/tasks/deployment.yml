@@ -1,28 +1,46 @@
 ---
-- name: Load secrets (use Ansible Vault in production)
-  include_vars: "../../../vars/secrets.yml"
-  no_log: true
+- name: "CONFIG: Define Ingress Public IP"
+  set_fact:
+    # Nếu đã được set từ playbook/extra-vars thì giữ nguyên;
+    # nếu chưa thì mặc định lấy public IP của worker-0 (phù hợp lab dùng NodePort/Ingress)
+    ingress_public_ip: "{{ ingress_public_ip | default(hostvars[groups['workers'][0]].ansible_host) }}"
   tags: [deploy, backend, frontend]
 
-- name: Set public_base_ip (worker-0 public IP for ingress URL)
+- name: "CONFIG: Load backend secrets from Vault"
   set_fact:
-    public_base_ip: "{{ hostvars[groups['workers'][0]].ansible_host }}"
-  tags: [deploy, backend, frontend]
+    backend_secrets:
+      # Base URL & Payment
+      CLIENT_URL: "{{ client_url | default('http://' ~ ingress_public_ip) }}"
+      VNP_RETURN_URL: "{{ vnp_return_url | default('http://' ~ ingress_public_ip ~ '/payment-return') }}"
 
-- name: Set ingress_public_ip (use first worker public IP)
-  set_fact:
-    ingress_public_ip: "{{ hostvars[groups['workers'][0]].ansible_host }}"
+      # Database (Lấy từ vault_mongo_uri)
+      MONGO_URI: "{{ vault_mongo_uri }}"
 
-- name: Build services_to_deploy list
-  set_fact:
-    services_to_deploy: >-
-      {{
-        (target_service is defined and target_service | length > 0)
-        | ternary([target_service], ['backend', 'frontend'])
-      }}
-  tags: [deploy, backend, frontend]
+      # JWT (Khớp với các biến vault_ của bạn)
+      JWT_SECRET: "{{ vault_jwt_secret }}"
+      JWT_REFRESH_SECRET: "{{ vault_jwt_refresh }}"
+      JWT_EXPIRES_IN: "{{ jwt_expires_in | default('15m') }}"
+      JWT_REFRESH_EXPIRES_IN: "{{ jwt_refresh_expires_in | default('7d') }}"
+
+      # Session
+      SESSION_SECRET: "{{ vault_session_secret }}"
+
+      # VNPAY
+      VNP_TMNCODE: "{{ vault_vnp_tmncode }}"
+      VNP_HASHSECRET: "{{ vault_vnp_hash }}"
+
+      # Google OAuth
+      GOOGLE_CLIENT_ID: "{{ vault_google_id }}"
+      GOOGLE_CLIENT_SECRET: "{{ vault_google_secret }}"
+      GOOGLE_CALLBACK_URL: "{{ google_callback_url | default('http://' ~ ingress_public_ip ~ '/api/auth/google/callback') }}"
+
+      # Email
+      SENDGRID_API_KEY: "{{ vault_sendgrid_key }}"
+  changed_when: false
+  tags: [deploy, backend]
 
 - name: Create/Update Kubernetes Secret for backend
+  when: (target_service | default('')) == 'backend'
   kubernetes.core.k8s:
     state: present
     namespace: k3s-app
@@ -31,37 +49,22 @@
       apiVersion: v1
       kind: Secret
       metadata:
-        name: "backend-secrets"
+        name: backend-secrets
       type: Opaque
-      stringData:
-        CLIENT_URL: "http://{{ ingress_public_ip }}"
-        VNP_RETURN_URL: "http://{{ ingress_public_ip }}/payment-return"
-        MONGO_URI: "{{ vault_mongo_uri }}"
-        JWT_SECRET: "{{ vault_jwt_secret }}"
-        JWT_REFRESH_SECRET: "{{ vault_jwt_refresh }}"
-        JWT_EXPIRES_IN: "15m"
-        JWT_REFRESH_EXPIRES_IN: "7d"
-        SESSION_SECRET: "{{ vault_session_secret }}"
-        VNP_TMNCODE: "{{ vault_vnp_tmncode }}"
-        VNP_HASHSECRET: "{{ vault_vnp_hash }}"
-        GOOGLE_CLIENT_ID: "{{ vault_google_id }}"
-        GOOGLE_CLIENT_SECRET: "{{ vault_google_secret }}"
-        SENDGRID_API_KEY: "{{ vault_sendgrid_key }}"
-        GOOGLE_CALLBACK_URL: "http://{{ ingress_public_ip }}/api/auth/google/callback"
-  when: "'backend' in services_to_deploy"
+      stringData: "{{ backend_secrets }}"
   tags: [deploy, backend]
 
-- name: Apply Deployment(s) via template (Rolling Update)
+- name: Apply Deployment for {{ target_service }} (Rolling Update)
   kubernetes.core.k8s:
     state: present
     namespace: k3s-app
     kubeconfig: "/etc/rancher/k3s/k3s.yaml"
     definition: "{{ lookup('template', 'deployment.j2') }}"
   vars:
-    service_name: "{{ item }}"
+    service_name: "{{ target_service }}"
     app_image_tag: "{{ image_tag | default('latest') }}"
-    target_node_role: "{{ 'frontend' if item == 'frontend' else 'backend' }}"
-    
+    # place pods according to node labels (role=frontend/backend/database)
+    target_node_role: "{{ (target_service == 'frontend') | ternary('frontend', (target_service == 'backend') | ternary('backend', 'worker')) }}"
+    # avoid recursive var name 'image_pull_secret'
     k8s_image_pull_secret: "{{ image_pull_secret | default('') }}"
-  loop: "{{ services_to_deploy }}"
   tags: [deploy, backend, frontend]

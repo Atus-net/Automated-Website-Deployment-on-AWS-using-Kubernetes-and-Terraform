@@ -1,0 +1,35 @@
+# NOTE: 'version' key is deprecated in newer docker compose; keep file compatible.
+services:
+  jenkins:
+    image: jenkins/jenkins:lts-jdk17
+    container_name: jenkins
+    restart: unless-stopped
+    user: root
+    ports:
+      # Jenkins default HTTP port inside container is 8080
+      - "{{ jenkins_http_port }}:8080"
+      - "50000:50000"
+    volumes:
+      - "{{ cicd_dir }}/jenkins_home:/var/jenkins_home"
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "{{ cicd_dir }}/jenkins_casc:/var/jenkins_home/casc"
+      - "{{ cicd_dir }}/jenkins_init:/usr/share/jenkins/ref/init.groovy.d"
+      - "{{ cicd_dir }}/plugins.txt:/usr/share/jenkins/ref/plugins.txt"
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+      - CASC_JENKINS_CONFIG=/var/jenkins_home/casc/jenkins.yaml
+      - JENKINS_ADMIN_USER={{ jenkins_admin_user }}
+      - JENKINS_ADMIN_PASSWORD={{ jenkins_admin_password }}
+      - SONARQUBE_TOKEN={{ sonarqube_token }}
+
+  sonarqube:
+    image: sonarqube:lts-community
+    container_name: sonarqube
+    restart: unless-stopped
+    ports:
+      - "{{ sonarqube_http_port }}:9000"
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+    volumes:
+      - "{{ cicd_dir }}/sonarqube_data:/opt/sonarqube/data"
+      - "{{ cicd_dir }}/sonarqube_extensions:/opt/sonarqube/extensions"

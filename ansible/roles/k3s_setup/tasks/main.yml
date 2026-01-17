@@ -1,10 +1,12 @@
 ---
-- name: "Cập nhật danh sách gói hệ thống"
+- name: Update apt cache
+  become: true
   apt:
-    update_cache: yes
-    force_apt_get: yes
+    update_cache: true
+    cache_valid_time: 3600
 
-- name: "Cài đặt các gói hỗ trợ cần thiết"
+- name: Install required system packages
+  become: true
   apt:
     name:
       - curl
@@ -12,22 +14,27 @@
       - gnupg
       - lsb-release
       - python3-pip
+      - python3-setuptools
+      - python3-wheel
+      - python3-venv
     state: present
 
-- name: "Cài đặt thư viện Kubernetes cho Python (dành cho Ansible)"
+- name: Upgrade pip (recommended)
+  become: true
+  pip:
+    name: pip
+    state: latest
+    executable: pip3
+
+- name: Install Kubernetes Python library for Ansible
+  become: true
   pip:
     name: kubernetes
     state: present
+    executable: pip3
 
-- name: "Vô hiệu hóa Firewall (UFW) để các Node kết nối thông suốt"
+- name: Disable UFW firewall (lab-friendly)
+  become: true
   ufw:
     state: disabled
-
-- name: "Dừng và vô hiệu hóa các dịch vụ gây xung đột (nếu có)"
-  systemd:
-    name: "{{ item }}"
-    state: stopped
-    enabled: no
-  with_items:
-    - ufw
-  ignore_errors: yes
+  ignore_errors: true

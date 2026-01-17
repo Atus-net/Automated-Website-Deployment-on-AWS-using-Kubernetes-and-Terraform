@@ -1,0 +1,167 @@
+---
+# roles/cicd_tools/tasks/main.yml
+
+- name: Update apt cache
+  apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install base dependencies for Docker repo
+  apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+
+- name: Add Docker official GPG key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add Docker apt repository
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+    filename: docker
+
+- name: Install Docker Engine + Compose plugin
+  apt:
+    update_cache: true
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+
+- name: Ensure Docker service is enabled and started
+  service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Add ubuntu user to docker group
+  user:
+    name: ubuntu
+    groups: docker
+    append: true
+
+# =========================
+# Secrets (optional)
+# =========================
+- name: Load secrets (optional)
+  include_vars:
+    file: "{{ playbook_dir }}/vars/secrets.yml"
+  no_log: true
+  ignore_errors: true
+
+# =========================
+# Ensure directories
+# =========================
+- name: Ensure CICD directories exist (Jenkins + SonarQube)
+  file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('ubuntu') }}"
+    group: "{{ item.group | default('ubuntu') }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop:
+    - { path: "{{ cicd_dir }}", owner: "ubuntu", group: "ubuntu", mode: "0755" }
+    - { path: "{{ cicd_dir }}/jenkins_home", owner: "1000", group: "1000", mode: "0775" }
+    - { path: "{{ cicd_dir }}/jenkins_casc", owner: "ubuntu", group: "ubuntu", mode: "0755" }
+    - { path: "{{ cicd_dir }}/jenkins_init", owner: "ubuntu", group: "ubuntu", mode: "0755" }
+    - { path: "{{ cicd_dir }}/sonarqube_data", owner: "999", group: "999", mode: "0775" }
+    - { path: "{{ cicd_dir }}/sonarqube_extensions", owner: "999", group: "999", mode: "0775" }
+
+# =========================
+# Ports cleanup (lab-friendly)
+# =========================
+- name: Stop any process using port 8080
+  shell: |
+    set -e
+    pid=$(sudo lsof -t -i:8080 || true)
+    if [ -n "$pid" ]; then
+      sudo kill -9 $pid
+    fi
+  args:
+    executable: /bin/bash
+
+- name: Stop any process using port 9000
+  shell: |
+    set -e
+    pid=$(sudo lsof -t -i:9000 || true)
+    if [ -n "$pid" ]; then
+      sudo kill -9 $pid
+    fi
+  args:
+    executable: /bin/bash
+
+# =========================
+# Render configs
+# =========================
+- name: Render docker compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: "{{ cicd_dir }}/docker-compose.yml"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0644"
+
+- name: Render Jenkins Configuration as Code (JCasC)
+  template:
+    src: jenkins.yaml.j2
+    dest: "{{ cicd_dir }}/jenkins_casc/jenkins.yaml"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0644"
+
+# Init Groovy should only upsert sonar-token (DockerHub creds managed in Jenkins UI)
+- name: Install init groovy for credentials
+  copy:
+    src: init-credentials.groovy
+    dest: "{{ cicd_dir }}/jenkins_init/01-init-credentials.groovy"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0644"
+
+# =========================
+# Start stack
+# =========================
+- name: Start Jenkins + SonarQube via docker compose
+  shell: |
+    set -e
+    cd "{{ cicd_dir }}"
+    docker compose up -d
+  args:
+    executable: /bin/bash
+
+# =========================
+# Install Trivy
+# =========================
+- name: Install Trivy dependencies
+  apt:
+    name:
+      - wget
+      - apt-transport-https
+    state: present
+
+- name: Add Trivy repository key
+  shell: |
+    set -e
+    wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+  args:
+    executable: /bin/bash
+
+- name: Add Trivy apt repository
+  apt_repository:
+    repo: "deb https://aquasecurity.github.io/trivy-repo/deb {{ ansible_distribution_release }} main"
+    state: present
+    filename: trivy
+
+- name: Install Trivy
+  apt:
+    update_cache: true
+    name: trivy
+    state: present

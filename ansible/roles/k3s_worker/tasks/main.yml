@@ -1,10 +1,19 @@
 ---
-- name: Set master_ip fact (prefer private IP)
+- name: Determine master host for K3s API (fallback order)
   set_fact:
-    master_ip: >-
-      {{ hostvars[groups['masters'][0]].k3s_server_ip
-         | default(hostvars[groups['masters'][0]].ansible_default_ipv4.address)
-         | default(hostvars[groups['masters'][0]].ansible_host) }}
+    k3s_master_api_host: >-
+      {{
+        hostvars[groups['masters'][0]].get('k3s_server_ip')
+        | default(hostvars[groups['masters'][0]].get('ansible_host'), true)
+        | default(hostvars[groups['masters'][0]].get('ansible_default_ipv4', {}).get('address'), true)
+      }}
+
+- name: Wait for node-token file on master
+  become: true
+  delegate_to: "{{ groups['masters'][0] }}"
+  wait_for:
+    path: /var/lib/rancher/k3s/server/node-token
+    timeout: 180
 
 - name: Get k3s token from master when missing
   become: true
@@ -19,19 +28,12 @@
     k3s_token: "{{ token_from_master.stdout }}"
   when: k3s_token is not defined
 
-- name: Wait for Master API reachable from worker (PRIVATE IP)
+- name: Wait for Master API reachable from worker
   wait_for:
-    host: "{{ master_ip }}"
+    host: "{{ k3s_master_api_host }}"
     port: 6443
-    timeout: 300
+    timeout: 180
     delay: 3
-
-# Nếu worker từng join lỗi/treo, dọn service trước cho sạch
-- name: Stop k3s-agent if exists (safe)
-  become: true
-  shell: |
-    systemctl stop k3s-agent 2>/dev/null || true
-  changed_when: false
 
 - name: Join worker to K3s cluster (idempotent)
   become: true
@@ -40,25 +42,16 @@
   args:
     creates: /usr/local/bin/k3s-agent
   environment:
-    K3S_URL: "https://{{ master_ip }}:6443"
+    K3S_URL: "https://{{ k3s_master_api_host }}:6443"
     K3S_TOKEN: "{{ k3s_token }}"
-    # Gắn node-name + label role ngay lúc join
-    INSTALL_K3S_EXEC: "agent --node-name {{ inventory_hostname }} --node-label role={{ node_role | default('worker') }}"
+    INSTALL_K3S_EXEC: >-
+      agent
+      --node-name {{ inventory_hostname }}
+      --node-label role={{ node_role | default('worker') }}
 
-- name: Enable + restart k3s-agent
+- name: Ensure k3s-agent service is enabled and started
   become: true
-  shell: |
-    systemctl daemon-reload
-    systemctl enable k3s-agent
-    systemctl restart k3s-agent
-  changed_when: false
-
-- name: Wait k3s-agent active
-  become: true
-  shell: |
-    systemctl is-active --quiet k3s-agent
-  register: k3s_agent_active
-  retries: 30
-  delay: 5
-  until: k3s_agent_active.rc == 0
-  changed_when: false
+  service:
+    name: k3s-agent
+    state: started
+    enabled: true

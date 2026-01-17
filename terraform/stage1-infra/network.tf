@@ -5,12 +5,18 @@ data "aws_availability_zones" "available" {
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
-  tags                 = { Name = "${var.project}-vpc" }
+
+  tags = {
+    Name = "${var.project}-vpc"
+  }
 }
 
 resource "aws_internet_gateway" "this" {
   vpc_id = aws_vpc.this.id
-  tags   = { Name = "${var.project}-igw" }
+
+  tags = {
+    Name = "${var.project}-igw"
+  }
 }
 
 resource "aws_subnet" "public" {
@@ -18,7 +24,10 @@ resource "aws_subnet" "public" {
   cidr_block              = var.public_subnet_cidr
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
-  tags                    = { Name = "${var.project}-subnet" }
+
+  tags = {
+    Name = "${var.project}-subnet-public"
+  }
 }
 
 resource "aws_route_table" "public" {
@@ -29,7 +38,9 @@ resource "aws_route_table" "public" {
     gateway_id = aws_internet_gateway.this.id
   }
 
-  tags = { Name = "${var.project}-public-rt" }
+  tags = {
+    Name = "${var.project}-public-rt"
+  }
 }
 
 resource "aws_route_table_association" "public" {
@@ -37,10 +48,18 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+# -------------------------------------------------------
+# Security Groups (security-first, vẫn đủ chức năng đồ án)
+# - DevOps: SSH + Jenkins + Sonar chỉ từ admin_cidr
+# - Master/Worker: SSH từ admin_cidr
+# - HTTP/HTTPS public để truy cập Ingress (nip.io)
+# - NodePort range chỉ INTERNAL trong VPC (không mở ra Internet)
+# -------------------------------------------------------
+
 # SG DevOps: SSH + Jenkins/Sonar chỉ từ IP của bạn
 resource "aws_security_group" "devops" {
   name        = "${var.project}-sg-devops"
-  description = "DevOps node SG"
+  description = "DevOps node SG (Jenkins + SonarQube)"
   vpc_id      = aws_vpc.this.id
 
   ingress {
@@ -52,7 +71,7 @@ resource "aws_security_group" "devops" {
   }
 
   ingress {
-    description = "Jenkins"
+    description = "Jenkins UI"
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
@@ -60,26 +79,13 @@ resource "aws_security_group" "devops" {
   }
 
   ingress {
-    description = "SonarQube (optional)"
+    description = "SonarQube UI"
     from_port   = 9000
     to_port     = 9000
     protocol    = "tcp"
     cidr_blocks = [var.admin_cidr]
   }
-    ingress {
-    description = "Grafana"
-    from_port   = 9090
-    to_port     = 9090
-    protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
-  }
-    ingress {
-    description = "Prometheus"
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = [var.admin_cidr]
-  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -87,11 +93,12 @@ resource "aws_security_group" "devops" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "${var.project}-sg-devops" }
+  tags = {
+    Name = "${var.project}-sg-devops"
+  }
 }
 
-# SG Master: SSH từ IP bạn, k3s API 6443 từ DevOps + (optional) IP bạn, internal trong VPC
-
+# SG Master: SSH từ admin, K3s API 6443 từ DevOps + admin (tuỳ chọn), internal trong VPC
 resource "aws_security_group" "master" {
   name        = "${var.project}-sg-master"
   description = "K3s master SG"
@@ -121,11 +128,38 @@ resource "aws_security_group" "master" {
     cidr_blocks = [var.admin_cidr]
   }
 
+  # Public access for Ingress (k3s ServiceLB/ingress-nginx can listen on 80/443 on any node)
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Internal within VPC
   ingress {
     description = "Internal within VPC"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  # NodePort range ONLY internal (avoid exposing random services to Internet)
+  ingress {
+    description = "K8s NodePort (internal only)"
+    from_port   = 30000
+    to_port     = 32767
+    protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
   }
 
@@ -136,10 +170,12 @@ resource "aws_security_group" "master" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "${var.project}-sg-master" }
+  tags = {
+    Name = "${var.project}-sg-master"
+  }
 }
 
-# SG Worker: SSH từ IP bạn, Web public 80/443, internal trong VPC
+# SG Worker: SSH từ admin, Web public 80/443, internal trong VPC, NodePort chỉ internal
 resource "aws_security_group" "worker" {
   name        = "${var.project}-sg-worker"
   description = "K3s worker SG"
@@ -169,6 +205,7 @@ resource "aws_security_group" "worker" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Internal within VPC
   ingress {
     description = "Internal within VPC"
     from_port   = 0
@@ -177,20 +214,13 @@ resource "aws_security_group" "worker" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  # NodePort range ONLY internal
   ingress {
-    description = "K8s NodePort"
+    description = "K8s NodePort (internal only)"
     from_port   = 30000
-    to_port     = 32767 # Dải cổng mặc định của NodePort
+    to_port     = 32767
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Backend Port"
-    from_port   = 8080
-    to_port     = 8080
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 
   egress {
@@ -200,5 +230,7 @@ resource "aws_security_group" "worker" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "${var.project}-sg-worker" }
+  tags = {
+    Name = "${var.project}-sg-worker"
+  }
 }

@@ -4,6 +4,9 @@
 # - Reads subnet + SG IDs from Stage 1 via terraform_remote_state (local)
 # - Creates: DevOps node + K3s master + K3s workers
 # - Generates ansible/inventory.ini via local_file + template
+# Security notes:
+# - No private key content is stored in Terraform.
+# - SSH uses AWS Key Pair name (key_name) + local private key path for Ansible.
 #############################
 
 # -----------------------------
@@ -42,7 +45,7 @@ locals {
 }
 
 # -----------------------------
-# EC2: DevOps node (Jenkins on EC2)
+# EC2: DevOps node (Jenkins + SonarQube via docker-compose)
 # -----------------------------
 resource "aws_instance" "devops_node" {
   ami           = data.aws_ami.ubuntu_2204.id
@@ -89,6 +92,12 @@ resource "aws_instance" "k3s_master" {
     http_tokens   = "required"
   }
 
+  root_block_device {
+    volume_type = "gp3"
+    volume_size = 30
+    encrypted   = true
+  }
+
   tags = {
     Name = "K3s-Master"
     Role = "master"
@@ -112,6 +121,12 @@ resource "aws_instance" "k3s_worker" {
     http_tokens   = "required"
   }
 
+  root_block_device {
+    volume_type = "gp3"
+    volume_size = 30
+    encrypted   = true
+  }
+
   tags = {
     Name = "K3s-Worker-${count.index + 1}"
     Role = "worker"
@@ -120,7 +135,8 @@ resource "aws_instance" "k3s_worker" {
 
 # -----------------------------
 # Generate Ansible inventory.ini
-# NOTE: workers MUST join via master PRIVATE IP (stable across lab reset)
+# - ansible_host uses public IP for SSH + nip.io
+# - k3s_server_ip uses master private IP for worker join
 # -----------------------------
 locals {
   worker_ips = [for w in aws_instance.k3s_worker : w.public_ip]
@@ -138,10 +154,10 @@ locals {
     master_ip         = aws_instance.k3s_master.public_ip
     master_private_ip = aws_instance.k3s_master.private_ip
 
-    worker_ips        = local.worker_ips
-    worker_roles      = local.worker_roles
-    ansible_user      = var.ansible_user
-    private_key       = var.ansible_private_key_path
+    worker_ips   = local.worker_ips
+    worker_roles = local.worker_roles
+    ansible_user = var.ansible_user
+    private_key  = var.ansible_private_key_path
   })
 }
 

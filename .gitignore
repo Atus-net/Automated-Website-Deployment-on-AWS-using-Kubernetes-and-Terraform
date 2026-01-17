@@ -1,23 +1,112 @@
-# Terraform
-**/.terraform/
-**/*.tfstate
-**/*.tfstate.*
-crash.log
-crash.*.log
+####################################
+# OS / Editor
+####################################
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Keys
-**/*.pem
-**/*.key
+####################################
+# Git / Logs
+####################################
+*.log
+logs/
+*.out
 
-# Ansible secrets
-ansible/vars/secrets.yml
-ansible/vars/*.vault
-
-# Node
-**/node_modules/
-**/dist/
-**/.env
-**/.env.*
-.vault_pass
+####################################
+# ZIP / ARCHIVE FILES (KHÔNG CHO PUSH)
+####################################
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
 *.bck
-*.drf
+
+####################################
+# Terraform
+####################################
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.*
+crash.log
+*.tfvars
+*.tfvars.json
+
+####################################
+# Terraform sensitive / local files
+####################################
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+
+####################################
+# Ansible
+####################################
+ansible/.vault_pass
+ansible/vars/secrets.yml
+ansible/vars/secrets.yaml
+ansible/group_vars/*/secrets.yml
+ansible/group_vars/*/secrets.yaml
+*.retry
+
+####################################
+# Ansible generated / local inventory
+####################################
+inventory
+inventory.ini.bak
+inventory.ini~
+
+####################################
+# Python / Virtualenv
+####################################
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv
+venv/
+
+####################################
+# Node / Frontend
+####################################
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/
+build/
+
+####################################
+# Docker
+####################################
+.docker/
+docker-compose.override.yml
+
+####################################
+# Jenkins
+####################################
+jenkins_home/
+workspace/
+cicd/
+*.jpi
+*.hpi
+
+####################################
+# Kubernetes
+####################################
+.kube/
+*.kubeconfig
+
+####################################
+# Backup / Temp
+####################################
+backup/
+tmp/
+temp/

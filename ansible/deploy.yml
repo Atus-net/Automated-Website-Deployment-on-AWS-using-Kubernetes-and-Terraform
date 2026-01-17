@@ -1,0 +1,35 @@
+---
+- name: "DEPLOY: Infrastructure + App (Master)"
+  hosts: masters
+  become: yes
+  tags: [deploy]
+  tasks:
+    - name: Load deploy secrets (optional)
+      include_vars:
+        file: vars/secrets.yml
+      no_log: true
+      ignore_errors: true
+
+    - name: "Deploy Infrastructure (DB/Ingress/app prerequisites)"
+      include_role:
+        name: deploy_app
+        tasks_from: infrastructure.yml
+      tags: [infra]
+
+    - name: "Deploy Backend"
+      include_role:
+        name: deploy_app
+        tasks_from: deployment.yml
+      vars:
+        target_service: backend
+        image_tag: "{{ backend_image_tag | default('latest') }}"
+      tags: [backend]
+
+    - name: "Deploy Frontend"
+      include_role:
+        name: deploy_app
+        tasks_from: deployment.yml
+      vars:
+        target_service: frontend
+        image_tag: "{{ frontend_image_tag | default('latest') }}"
+      tags: [frontend]

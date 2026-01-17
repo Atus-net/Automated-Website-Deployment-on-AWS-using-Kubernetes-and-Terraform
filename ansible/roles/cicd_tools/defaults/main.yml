@@ -1,0 +1,26 @@
+---
+cicd_dir: /opt/cicd
+jenkins_http_port: 8080
+sonarqube_http_port: 9000
+
+# Jenkins admin user/password (for lab)
+jenkins_admin_user: admin
+jenkins_admin_password: admin123
+
+# Optional credentials created in Jenkins (set via --extra-vars)
+dockerhub_username: ""
+dockerhub_password: ""
+sonarqube_token: ""
+
+# Plugins list (keep minimal + common)
+jenkins_plugins:
+  - workflow-aggregator
+  - git
+  - docker-workflow
+  - configuration-as-code
+  - credentials-binding
+  - ssh-agent
+  - sonar
+  - junit
+  - pipeline-stage-view
+  - blueocean

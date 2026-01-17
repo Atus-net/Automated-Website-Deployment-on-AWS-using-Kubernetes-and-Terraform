@@ -1,0 +1,43 @@
+---
+# roles/devops_tools/tasks/main.yml
+
+# 1) System tuning for SonarQube (needed even if Sonar runs in docker-compose)
+- name: Set vm.max_map_count for SonarQube
+  become: true
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: "262144"
+    state: present
+    reload: true
+
+# 2) Install Trivy (official repo)
+- name: Install Trivy dependencies
+  become: true
+  ansible.builtin.apt:
+    name:
+      - wget
+      - apt-transport-https
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: true
+
+- name: Add Trivy GPG key
+  become: true
+  ansible.builtin.apt_key:
+    url: https://aquasecurity.github.io/trivy-repo/deb/public.key
+    state: present
+
+- name: Add Trivy repository
+  become: true
+  ansible.builtin.apt_repository:
+    repo: "deb https://aquasecurity.github.io/trivy-repo/deb {{ ansible_distribution_release }} main"
+    state: present
+    filename: trivy
+    update_cache: true
+
+- name: Install Trivy
+  become: true
+  ansible.builtin.apt:
+    name: trivy
+    state: present

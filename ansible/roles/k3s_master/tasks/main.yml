@@ -1,4 +1,18 @@
----
+- name: Build K3s TLS SAN list
+  set_fact:
+    k3s_tls_sans: >-
+      {{
+        [
+          (ansible_host | default('')),
+          (k3s_server_ip | default('')),
+          (ansible_default_ipv4.address | default('')),
+          (inventory_hostname | default(''))
+        ]
+        | select('string') | map('trim')
+        | reject('equalto','')
+        | unique | list
+      }}
+
 - name: Install K3s on Master (idempotent)
   become: true
   shell: |
@@ -10,8 +24,14 @@
       server
       --disable=traefik
       --write-kubeconfig-mode 644
-      --tls-san {{ ansible_host }}
-      --tls-san {{ k3s_server_ip | default(ansible_default_ipv4.address) }}
+      {% for san in k3s_tls_sans %} --tls-san {{ san }}{% endfor %}
+
+- name: Ensure k3s service is enabled and started
+  become: true
+  service:
+    name: k3s
+    state: started
+    enabled: true
 
 - name: Wait for K3s API (6443) to be ready
   become: true
@@ -38,4 +58,5 @@
     k3s_token: "{{ master_token.stdout }}"
   delegate_to: "{{ item }}"
   delegate_facts: true
-  loop: "{{ groups['workers'] }}"
+  loop: "{{ groups['workers'] | default([]) }}"
+  when: groups['workers'] is defined and (groups['workers'] | length > 0)

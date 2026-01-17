@@ -1,0 +1,104 @@
+---
+- name: Install Helm on master if missing
+  become: true
+  shell: |
+    set -e
+    if ! command -v helm >/dev/null 2>&1; then
+      curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    fi
+  args:
+    creates: /usr/local/bin/helm
+
+- name: Ensure monitoring namespace exists
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ monitoring_namespace }}"
+
+# -------------------------
+# Ingress Controller (nginx)
+# -------------------------
+- name: Add Helm repo for ingress-nginx
+  become: true
+  shell: |
+    set -e
+    helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+    helm repo update
+  args:
+    creates: /root/.cache/helm/repository/ingress-nginx-index.yaml
+
+- name: Install/Upgrade ingress-nginx controller
+  become: true
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  shell: |
+    set -e
+    helm upgrade --install {{ ingress_nginx_release_name }} ingress-nginx/ingress-nginx \
+      --namespace ingress-nginx --create-namespace
+  register: nginx_helm_out
+  changed_when: >
+    'Release' in nginx_helm_out.stdout and (
+      'installed' in nginx_helm_out.stdout or 'upgraded' in nginx_helm_out.stdout
+    )
+
+- name: Wait for ingress-nginx controller to be ready
+  become: true
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  shell: |
+    set -e
+    kubectl rollout status deployment/{{ ingress_nginx_release_name }}-ingress-nginx-controller -n ingress-nginx --timeout=180s
+  changed_when: false
+
+# -------------------------
+# kube-prometheus-stack
+# -------------------------
+- name: Add Helm repo for prometheus-community
+  become: true
+  shell: |
+    set -e
+    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+    helm repo update
+  args:
+    creates: /root/.cache/helm/repository/prometheus-community-index.yaml
+
+- name: Install/Upgrade kube-prometheus-stack (Prometheus + Grafana)
+  become: true
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  shell: |
+    set -e
+    helm upgrade --install {{ monitoring_release_name }} prometheus-community/kube-prometheus-stack \
+      --namespace {{ monitoring_namespace }} \
+      --set grafana.adminPassword={{ grafana_admin_password | quote }} \
+      --set grafana.service.type=ClusterIP \
+      --set prometheus.service.type=ClusterIP
+  register: monitoring_helm_out
+  changed_when: >
+    'Release' in monitoring_helm_out.stdout and (
+      'installed' in monitoring_helm_out.stdout or 'upgraded' in monitoring_helm_out.stdout
+    )
+
+# -------------------------
+# Ingress objects (optional)
+# -------------------------
+- name: Create Ingress for Grafana
+  when: monitoring_enable_ingress | bool
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'grafana-ingress.yml.j2') }}"
+
+- name: Create Ingress for Prometheus
+  when: monitoring_enable_ingress | bool
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'prometheus-ingress.yml.j2') }}"

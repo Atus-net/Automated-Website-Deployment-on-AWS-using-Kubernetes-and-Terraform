@@ -1,192 +1,164 @@
 ---
 # =======================================================
-# Stage 0: Cài đặt Node Exporter (Cho Monitoring)
+# Stage A: Base OS prerequisites (all nodes)
 # =======================================================
-- name: "MONITORING: Install Node Exporter on all hosts"
+- name: "SETUP: Base packages (all nodes)"
   hosts: all
   become: yes
-  tags: [monitoring, node_exporter]
-  tasks:
-    - name: Install Prometheus Node Exporter
-      ansible.builtin.apt: 
-        name: prometheus-node-exporter
-        state: present
-        update_cache: yes
+  tags: [setup]
+  roles:
+    - k3s_setup
 
-    - name: Ensure Node Exporter is running
-      ansible.builtin.service:  
-        name: prometheus-node-exporter
-        state: started
-        enabled: yes
 # =======================================================
-# Stage 1: Hạ tầng Kubernetes (K3s)
+# Stage B: K3s cluster
 # =======================================================
-- name: "K3S: Base & Cluster Setup"
-  hosts: all
+- name: "K3S: Install Master"
+  hosts: masters
   become: yes
   tags: [k3s]
   roles:
-    - { role: k3s_setup, tags: [setup] }
-    - { role: k3s_master, when: "'masters' in group_names", tags: [master] }
-    - { role: k3s_worker, when: "'workers' in group_names", tags: [worker] }
+    - k3s_master
+
+- name: "K3S: Join Workers"
+  hosts: workers
+  become: yes
+  tags: [k3s]
+  roles:
+    - k3s_worker
 
 # =======================================================
-# Stage 2: Cấu hình truy cập (Kubeconfig cho Jenkins)
+# Stage C: Kubeconfig
+# - master: local kubectl config
+# - devops: put kubeconfig into Jenkins volume (docker compose)
 # =======================================================
-- name: "ACCESS: Configure Jenkins Kubeconfig"
+- name: "CONFIG: kubeconfig on master"
+  hosts: masters
+  become: yes
+  tags: [config]
+  tasks:
+    - name: Ensure .kube exists
+      file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    - name: Copy kubeconfig
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: /home/ubuntu/.kube/config
+        remote_src: yes
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
+    - name: Replace localhost with master public IP
+      replace:
+        path: /home/ubuntu/.kube/config
+        regexp: '127\.0\.0\.1'
+        replace: "{{ ansible_host }}"
+
+- name: "CONFIG: Put kubeconfig into Jenkins volume on DevOps node"
   hosts: devops
   become: yes
-  tags: [access]
+  tags: [config, devops]
+  vars:
+    cicd_dir: "{{ cicd_dir | default('/opt/cicd') }}"
   tasks:
-    - name: Create .kube directory for Jenkins
-      file: { path: /var/lib/jenkins/.kube, state: directory, owner: jenkins, group: jenkins, mode: "0755" }
+    - name: Ensure Jenkins kubeconfig directory exists in jenkins_home volume
+      file:
+        path: "{{ cicd_dir }}/jenkins_home/.kube"
+        state: directory
+        owner: "1000"
+        group: "1000"
+        mode: "0755"
 
-    - name: Fetch config from master
-      fetch: { src: /etc/rancher/k3s/k3s.yaml, dest: /tmp/k3s_config, flat: yes }
+    - name: Fetch kubeconfig from master to controller
+      slurp:
+        src: /etc/rancher/k3s/k3s.yaml
       delegate_to: "{{ groups['masters'][0] }}"
+      register: kubeconfig_raw
 
-    - name: Deploy kubeconfig to Jenkins
-      copy: { src: /tmp/k3s_config, dest: /var/lib/jenkins/.kube/config, owner: jenkins, group: jenkins, mode: "0600" }
+    - name: Write kubeconfig into Jenkins volume
+      copy:
+        dest: "{{ cicd_dir }}/jenkins_home/.kube/config"
+        content: "{{ kubeconfig_raw.content | b64decode }}"
+        owner: "1000"
+        group: "1000"
+        mode: "0644"
 
-    - name: Update Master IP in Jenkins config
+    - name: Replace localhost with master public IP in Jenkins kubeconfig
       replace:
-        path: /var/lib/jenkins/.kube/config
+        path: "{{ cicd_dir }}/jenkins_home/.kube/config"
         regexp: '127\.0\.0\.1'
         replace: "{{ hostvars[groups['masters'][0]].ansible_host }}"
 
 # =======================================================
-# Stage 3: Giám sát (Prometheus) - Cập nhật tự động Scrape
+# Stage D: CI/CD tools (DevOps node)
+# Jenkins + SonarQube + Trivy (DockerHub creds managed in Jenkins UI)
 # =======================================================
-- name: "MONITORING: Prometheus"
+- name: "CICD: Jenkins + SonarQube + Trivy (DevOps node)"
   hosts: devops
   become: yes
-  tags: [monitoring, prometheus]
-  tasks:
-    - name: Create Prometheus configuration directory
-      file: { path: /etc/prometheus, state: directory, mode: '0755' }
-
-    - name: Generate dynamic prometheus.yml
-      copy:
-        dest: /etc/prometheus/prometheus.yml
-        content: |
-          global:
-            scrape_interval: 15s
-          scrape_configs:
-            - job_name: 'prometheus'
-              static_configs:
-                - targets: ['localhost:9090']
-            - job_name: 'k3s-nodes'
-              static_configs:
-                - targets: [ {% for host in groups['all'] %}'{{ hostvars[host].ansible_host }}:9100'{% if not loop.last %},{% endif %}{% endfor %} ]
-
-    - name: Run Prometheus Container
-      community.docker.docker_container:
-        name: prometheus
-        image: prom/prometheus:latest
-        state: started
-        restart_policy: always
-        published_ports: ["9090:9090"]
-        volumes:
-          - /etc/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-          - prometheus_data:/prometheus
+  tags: [cicd]
+  roles:
+    - cicd_tools
 
 # =======================================================
-# Stage 4: Hiển thị (Grafana)
+# Stage E: Monitoring (Master)
+# Install ingress-nginx + kube-prometheus-stack via Helm
 # =======================================================
-- name: "MONITORING: Grafana"
-  hosts: devops
-  become: yes
-  tags: [monitoring, grafana]
-  tasks:
-    - name: Run Grafana Container
-      community.docker.docker_container:
-        name: grafana
-        image: grafana/grafana:latest
-        state: started
-        restart_policy: always
-        published_ports: ["3000:3000"]
-        volumes:
-          - grafana_data:/var/lib/grafana
-
-# =======================================================
-# Stage 5: Phân tích mã nguồn (SonarQube)
-# =======================================================
-- name: "SECURITY: SonarQube"
-  hosts: devops
-  become: yes
-  tags: [security, sonarqube]
-  tasks:
-    - name: Ensure sysctl max_map_count
-      ansible.posix.sysctl: { name: vm.max_map_count, value: '262144', state: present, reload: yes }
-
-    - name: Run SonarQube Container
-      community.docker.docker_container:
-        name: sonarqube
-        image: sonarqube:lts-community
-        state: started
-        restart_policy: always
-        published_ports: ["9000:9000"]
-        volumes:
-          - sonarqube_data:/opt/sonarqube/data
-          - sonarqube_extensions:/opt/sonarqube/extensions
-
-# =======================================================
-# Stage 6: Quét lỗ hổng (Trivy)
-# =======================================================
-- name: "SECURITY: Trivy"
-  hosts: devops
-  become: yes
-  tags: [security, trivy]
-  tasks:
-    - name: "TRIVY: Install prerequisites"
-      apt:
-        name: [wget, apt-transport-https, gnupg, lsb-release]
-        state: present
-
-    - name: "TRIVY: Add GPG key"
-      shell: |
-        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-      args:
-        creates: /usr/share/keyrings/trivy.gpg
-
-    - name: "TRIVY: Add Repository"
-      apt_repository:
-        repo: "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb {{ ansible_distribution_release }} main"
-        state: present
-        filename: trivy
-        update_cache: yes
-
-    - name: "TRIVY: Install Trivy package"
-      apt: { name: trivy, state: present }
-
-# =======================================================
-# Stage E: Deploy (infra + app)
-# =======================================================
-- name: "DEPLOY: Deploy infrastructure + application"
+- name: "MONITORING: Prometheus + Grafana (Master)"
   hosts: masters
   become: yes
-  tags: [deploy]
+  tags: [monitoring, monitor]
+  roles:
+    - monitoring
+
+# =======================================================
+# Stage F: Optional labels (demo scheduling)
+# =======================================================
+- name: "LABEL: Label worker nodes (optional)"
+  hosts: masters
+  become: yes
+  tags: [label]
   tasks:
-    - name: ">>> STEP 1: Deploy Infrastructure <<<"
-      include_role:
-        name: deploy_app
-        tasks_from: infrastructure.yml
-      tags: [infra]
+    - name: Ensure jq is installed on master (required for labeling)
+      apt:
+        name: jq
+        state: present
+        update_cache: yes
 
-    - name: ">>> STEP 2: Deploy Backend <<<"
-      include_role:
-        name: deploy_app
-        tasks_from: deployment.yml
-      vars:
-        target_service: backend
-        image_tag: "{{ backend_image_tag | default('latest') }}"
-      tags: [backend]
+    - name: Gather facts from workers
+      setup:
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['workers'] | default([]) }}"
+      when: groups['workers'] is defined and (groups['workers'] | length > 0)
 
-    - name: ">>> STEP 3: Deploy Frontend <<<" 
-      include_role:
-        name: deploy_app
-        tasks_from: deployment.yml
-      vars:
-        target_service: frontend
-        image_tag: "{{ frontend_image_tag | default('latest') }}"
-      tags: [frontend]
+    - name: Apply labels role=<node_role>
+      shell: |
+        set -e
+        INTERNAL_IP="{{ hostvars[item].ansible_default_ipv4.address | default('') }}"
+        ROLE="{{ hostvars[item].node_role | default('worker') }}"
+        NODE_NAME=""
+
+        if [ -n "$INTERNAL_IP" ]; then
+          NODE_NAME=$(kubectl get nodes -o json | jq -r --arg ip "$INTERNAL_IP" \
+            '.items[] | select(.status.addresses[]? | select(.type=="InternalIP" and .address==$ip)) | .metadata.name' | head -n1)
+        fi
+
+        if [ -z "$NODE_NAME" ]; then
+          NODE_NAME="{{ item }}"
+        fi
+
+        kubectl label nodes "$NODE_NAME" role="$ROLE" --overwrite
+      args:
+        executable: /bin/bash
+      loop: "{{ groups['workers'] | default([]) }}"
+      when: groups['workers'] is defined and (groups['workers'] | length > 0)
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: false
+      ignore_errors: true

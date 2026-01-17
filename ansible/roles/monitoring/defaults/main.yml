@@ -1,0 +1,18 @@
+---
+# Namespace & kubeconfig
+monitoring_namespace: monitoring
+kubeconfig_path: /etc/rancher/k3s/k3s.yaml
+
+# Helm release names
+monitoring_release_name: monitoring
+ingress_nginx_release_name: ingress-nginx
+
+# Grafana
+grafana_admin_password: "admin"     # override bằng --extra-vars hoặc vault
+grafana_ingress_host: ""            # nếu rỗng -> grafana.<master_ip>.nip.io
+
+# Prometheus
+prometheus_ingress_host: ""         # nếu rỗng -> prometheus.<master_ip>.nip.io
+
+# Exposure strategy
+monitoring_enable_ingress: true     # true: tạo ingress; false: không tạo ingress (dùng port-forward)

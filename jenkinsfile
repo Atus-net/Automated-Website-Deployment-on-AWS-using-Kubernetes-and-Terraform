@@ -1,112 +1,184 @@
 pipeline {
-    agent any
-    
-    environment {
-        DOCKERHUB_USER = "latuss"
-        BACKEND_IMAGE  = "dolciluxe-backend"
-        FRONTEND_IMAGE = "dolciluxe-frontend"
-        K8S_NAMESPACE  = "k3s-app"
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    ansiColor('xterm')
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+  }
+
+  parameters {
+    booleanParam(name: 'RUN_SONAR', defaultValue: true, description: 'Run SonarQube scan')
+    booleanParam(name: 'RUN_TRIVY', defaultValue: true, description: 'Run Trivy scans')
+    booleanParam(name: 'DEPLOY', defaultValue: true, description: 'Deploy to K3s via Ansible')
+  }
+
+  environment {
+    // Image name (không kèm username, username lấy từ Jenkins credential)
+    BACKEND_IMAGE  = 'dolciluxe-backend'
+    FRONTEND_IMAGE = 'dolciluxe-frontend'
+
+    // Tag theo build
+    IMAGE_TAG = "${BUILD_NUMBER}"
+
+    // Paths trong repo (đổi nếu repo bạn khác)
+    BACKEND_DIR  = 'backend'
+    FRONTEND_DIR = 'frontend'
+
+    // Ansible files (đổi nếu bạn đặt trong thư mục con)
+    INVENTORY_FILE = 'inventory.ini'
+    DEPLOY_PLAYBOOK = 'deploy.yml'
+
+    // Docker config cho Jenkins chạy trong container
+    // (an toàn hơn dùng HOME/WORKSPACE thay vì hardcode /var/lib/jenkins)
+    DOCKER_CONFIG = "${WORKSPACE}/.docker"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
     }
 
-    stages {
-        stage('Setup Environment') {
-            steps {
-                script {
-                    // Fix Docker permissions
-                    sh '''
-                        # Tạo docker config cho jenkins
-                        mkdir -p /var/lib/jenkins/.docker
-                        chown -R jenkins:jenkins /var/lib/jenkins/.docker
-                        chmod 755 /var/lib/jenkins/.docker
-                        
-                        # Test Docker
-                        docker version || echo "Docker not accessible"
-                        
-                        # Check current directory
-                        pwd
-                        ls -la
-                    '''
-                }
-            }
-        }
+    stage('Pre-check') {
+      steps {
+        sh '''
+          set -e
+          test -f "${INVENTORY_FILE}" || (echo "Missing ${INVENTORY_FILE} (Terraform stage2 output)"; exit 1)
+          test -f "${DEPLOY_PLAYBOOK}" || (echo "Missing ${DEPLOY_PLAYBOOK}"; exit 1)
+          mkdir -p "${DOCKER_CONFIG}"
+        '''
+      }
+    }
 
-        stage('DockerHub Login') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'docker_hub',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    sh '''
-                        # Set Docker config path
-                        export DOCKER_CONFIG="/var/lib/jenkins/.docker"
-                        
-                        # Login to DockerHub
-                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                        
-                        # Verify login
-                        cat /var/lib/jenkins/.docker/config.json | grep auth
-                    '''
-                }
-            }
+    stage('Docker Login') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: 'dockerhub',
+          usernameVariable: 'DOCKER_USER',
+          passwordVariable: 'DOCKER_PASS'
+        )]) {
+          sh '''
+            set -e
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+          '''
         }
+      }
+    }
 
-        stage('Build Backend') {
-            steps {
-                dir('backend') {
-                    sh '''
-                        # Build with explicit config path
-                        DOCKER_CONFIG="/var/lib/jenkins/.docker" docker build -t ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest .
-                        
-                        # Tag also with build number
-                        docker tag ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}
-                    '''
-                }
-            }
-        }
-
-        stage('Build Frontend') {
-            steps {
-                dir('frontend') {
-                    sh '''
-                        DOCKER_CONFIG="/var/lib/jenkins/.docker" docker build -t ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest .
-                        docker tag ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                    '''
-                }
-            }
-        }
-
-        stage('Push Images') {
-            steps {
+    stage('Build & Push Images') {
+      parallel {
+        stage('Backend') {
+          steps {
+            withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+              dir("${BACKEND_DIR}") {
                 sh '''
-                    # Push backend
-                    DOCKER_CONFIG="/var/lib/jenkins/.docker" docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:latest
-                    DOCKER_CONFIG="/var/lib/jenkins/.docker" docker push ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}
-                    
-                    # Push frontend
-                    DOCKER_CONFIG="/var/lib/jenkins/.docker" docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:latest
-                    DOCKER_CONFIG="/var/lib/jenkins/.docker" docker push ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                  set -e
+                  IMAGE="${DOCKER_USER}/${BACKEND_IMAGE}:${IMAGE_TAG}"
+                  docker build -t "$IMAGE" .
+                  docker push "$IMAGE"
+
+                  docker tag "$IMAGE" "${DOCKER_USER}/${BACKEND_IMAGE}:latest"
+                  docker push "${DOCKER_USER}/${BACKEND_IMAGE}:latest"
                 '''
+              }
             }
+          }
         }
 
-        stage('Deploy') {
-            steps {
-                dir('k8s') {
-                    sh '''
-                        # Update image tags in manifests
-                        sed -i "s|image:.*${BACKEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${BACKEND_IMAGE}:${BUILD_NUMBER}|g" backend-deployment.yaml
-                        sed -i "s|image:.*${FRONTEND_IMAGE}:.*|image: ${DOCKERHUB_USER}/${FRONTEND_IMAGE}:${BUILD_NUMBER}|g" frontend-deployment.yaml
-                        
-                        # Apply deployments
-                        kubectl apply -f backend-deployment.yaml -n ${K8S_NAMESPACE}
-                        kubectl apply -f frontend-deployment.yaml -n ${K8S_NAMESPACE}
-                        
-                        # Check status
-                        kubectl get pods -n ${K8S_NAMESPACE}
-                    '''
-                }
+        stage('Frontend') {
+          steps {
+            withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+              dir("${FRONTEND_DIR}") {
+                sh '''
+                  set -e
+                  IMAGE="${DOCKER_USER}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
+                  docker build -t "$IMAGE" .
+                  docker push "$IMAGE"
+
+                  docker tag "$IMAGE" "${DOCKER_USER}/${FRONTEND_IMAGE}:latest"
+                  docker push "${DOCKER_USER}/${FRONTEND_IMAGE}:latest"
+                '''
+              }
             }
+          }
         }
+      }
     }
+
+    stage('SonarQube Scan') {
+      when { expression { return params.RUN_SONAR } }
+      steps {
+        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+          sh '''
+            set -e
+            # Nếu Jenkins và Sonar chạy cùng docker-compose network, hostname "sonarqube" sẽ OK.
+            # Nếu không, đổi SONAR_HOST_URL sang http://<DEVOPS_PUBLIC_IP>:9000
+            docker run --rm \
+              -e SONAR_HOST_URL="http://sonarqube:9000" \
+              -e SONAR_LOGIN="$SONAR_TOKEN" \
+              -v "$PWD:/usr/src" \
+              sonarsource/sonar-scanner-cli \
+              -Dsonar.projectKey=dolciluxe \
+              -Dsonar.sources=backend,frontend
+          '''
+        }
+      }
+    }
+
+    stage('Trivy Scan') {
+      when { expression { return params.RUN_TRIVY } }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh '''
+            set -e
+
+            echo "== Trivy FS (repo) =="
+            docker run --rm -v "$PWD:/work" -w /work aquasec/trivy:latest \
+              fs --exit-code 0 --severity HIGH,CRITICAL .
+
+            echo "== Trivy Image Backend =="
+            docker run --rm aquasec/trivy:latest \
+              image --exit-code 0 --severity HIGH,CRITICAL \
+              "${DOCKER_USER}/${BACKEND_IMAGE}:${IMAGE_TAG}"
+
+            echo "== Trivy Image Frontend =="
+            docker run --rm aquasec/trivy:latest \
+              image --exit-code 0 --severity HIGH,CRITICAL \
+              "${DOCKER_USER}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
+          '''
+        }
+      }
+    }
+
+    stage('Deploy to K3s (Ansible)') {
+      when { expression { return params.DEPLOY } }
+      steps {
+        sh '''
+          set -e
+          ansible --version
+
+          ansible-playbook -i "${INVENTORY_FILE}" "${DEPLOY_PLAYBOOK}" --tags deploy \
+            --extra-vars "backend_image_tag=${IMAGE_TAG} frontend_image_tag=${IMAGE_TAG}"
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      sh 'docker logout || true'
+      cleanWs(deleteDirs: true, disableDeferredWipeout: true)
+    }
+
+    success {
+      echo "Pipeline SUCCESS. Deployed tag=${BUILD_NUMBER}"
+    }
+
+    failure {
+      echo "Pipeline FAILED. Check stages logs."
+    }
+  }
 }

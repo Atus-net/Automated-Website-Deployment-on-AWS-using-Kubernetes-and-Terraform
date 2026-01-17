@@ -2,46 +2,7 @@
 # -------------------------------------------------------
 # INFRA: namespaces + ingress-nginx + shared services
 # Jenkins is NOT deployed in k8s (runs on EC2 devops_node)
-#
-# IMPORTANT:
-# - kubernetes.core.k8s runs on remote host (master)
-# - lookup('file', ...) & first_found run on CONTROLLER (your WSL)
 # -------------------------------------------------------
-
-# Resolve manifests directory on CONTROLLER side (WSL), not on remote EC2 master.
-- name: Resolve manifests directory (controller-side)
-  set_fact:
-    manifests_dir: >-
-      {{
-        (lookup('ansible.builtin.first_found', ff_params, errors='ignore') | default(''))
-        | dirname
-      }}
-  vars:
-    ff_params:
-      files:
-        # Prefer: ansible/k3s (most common in your structure)
-        - "k3s/nginx-custom.yaml"
-        # Fallback: repo root /k3s
-        - "../k3s/nginx-custom.yaml"
-        # Fallback: repo root /k8s/base
-        - "../k8s/base/nginx-custom.yaml"
-      paths:
-        - "{{ playbook_dir }}"
-  run_once: true
-  tags: [infra]
-
-- name: Fail if no manifests directory found
-  fail:
-    msg: >-
-      Could not find manifests directory.
-      Expected one of:
-      - {{ playbook_dir }}/k3s
-      - {{ playbook_dir }}/../k3s
-      - {{ playbook_dir }}/../k8s/base
-      (Need nginx-custom.yaml in one of those.)
-  when: manifests_dir in ['', '.', '/']
-  run_once: true
-  tags: [infra]
 
 - name: Remove default Traefik (optional safety)
   shell: |
@@ -71,11 +32,11 @@
   kubernetes.core.k8s:
     state: present
     kubeconfig: "/etc/rancher/k3s/k3s.yaml"
-    definition: "{{ lookup('file', manifests_dir ~ '/nginx-custom.yaml') }}"
+    definition: "{{ lookup('file', playbook_dir + '/../k8s/base/nginx-custom.yaml') }}"
   tags: [infra]
 
 - name: Wait for ingress-nginx controller to be ready
-  shell: kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=300s
+  shell: kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=180s
   environment:
     KUBECONFIG: /etc/rancher/k3s/k3s.yaml
   register: rollout
@@ -83,15 +44,15 @@
   failed_when: rollout.rc != 0
   tags: [infra]
 
-- name: Deploy MongoDB + Services + Ingress (from manifests_dir)
+- name: Deploy MongoDB + Services + Ingress
   kubernetes.core.k8s:
     state: present
     kubeconfig: "/etc/rancher/k3s/k3s.yaml"
     namespace: k3s-app
     definition: "{{ lookup('file', item) }}"
   loop:
-    - "{{ manifests_dir }}/mongo-db.yaml"
-    - "{{ manifests_dir }}/backend-service.yaml"
-    - "{{ manifests_dir }}/frontend-service.yaml"
-    - "{{ manifests_dir }}/ingress.yaml"
+    - "{{ playbook_dir }}/../k8s/base/mongo-db.yaml"
+    - "{{ playbook_dir }}/../k8s/base/backend-service.yaml"
+    - "{{ playbook_dir }}/../k8s/base/frontend-service.yaml"
+    - "{{ playbook_dir }}/../k8s/base/ingress.yaml"
   tags: [infra]

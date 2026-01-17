@@ -25,6 +25,7 @@ spec:
       labels:
         app: mongo
     spec:
+      
       nodeSelector:
         role: database
       containers:
@@ -37,6 +38,7 @@ spec:
               mountPath: /data/db
       volumes:
         - name: mongo-storage
+          # Giữ nguyên hostPath là chính xác
           hostPath:
             path: /home/ubuntu/mongo-data
             type: DirectoryOrCreate
