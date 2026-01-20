@@ -29,4 +29,4 @@ process.on('SIGTERM', async () => {
     console.log('SIGTERM signal received');
     await connection.close();
     process.exit(0);
-});                                                             
+});                                                             // Demo change
