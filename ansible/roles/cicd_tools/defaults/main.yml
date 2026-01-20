@@ -28,3 +28,4 @@ jenkins_plugins:
   - junit
   - pipeline-stage-view
   - blueocean
+  - Workspace Cleanup

@@ -14,9 +14,10 @@ jenkins:
 unclassified:
   location:
     url: "http://{{ ansible_host }}:{{ jenkins_http_port }}/"
+
   sonarGlobalConfiguration:
     buildWrapperEnabled: true
     installations:
-      - name: "SonarQube"
-        serverUrl: "http://sonarqube:9000"
+      - name: "sonarqube" # Sửa thành viết thường để khớp với Jenkinsfile
+        serverUrl: "http://sonarqube:9000" # Dùng service name của Docker Compose
         credentialsId: "sonar-token"

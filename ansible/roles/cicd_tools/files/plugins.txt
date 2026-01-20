@@ -7,3 +7,4 @@ sonar
 junit
 pipeline-stage-view
 blueocean
+Workspace Cleanup

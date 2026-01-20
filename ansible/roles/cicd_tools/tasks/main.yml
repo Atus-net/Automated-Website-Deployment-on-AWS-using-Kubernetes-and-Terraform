@@ -1,15 +1,13 @@
 ---
-# roles/cicd_tools/tasks/main.yml
-
 # =====================================================
-# 0) Base vars sanity (optional - avoid undefined)
+# 0) Khởi tạo biến & Kiểm tra tính sẵn sàng
 # =====================================================
 - name: Ensure cicd_dir has a default value
-  set_fact:
+  ansible.builtin.set_fact:
     cicd_dir: "{{ cicd_dir | default('/opt/cicd') }}"
 
 # =====================================================
-# 1) Install Docker Engine + Compose plugin
+# 1) Cài đặt Docker Engine + Compose plugin
 # =====================================================
 - name: Update apt cache
   become: true
@@ -17,15 +15,18 @@
     update_cache: true
     cache_valid_time: 3600
 
-- name: Install base dependencies for Docker repo
+- name: Install dependencies for Docker
   become: true
   ansible.builtin.apt:
-    name:
+    name: 
+      - apt-transport-https
       - ca-certificates
       - curl
       - gnupg
       - lsb-release
+      - unzip
       - lsof
+
     state: present
 
 - name: Add Docker official GPG key
@@ -39,20 +40,14 @@
   ansible.builtin.apt_repository:
     repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
     state: present
-    filename: docker
 
-- name: Install Docker Engine + Compose plugin
+- name: Install Docker Engine + Compose
   become: true
   ansible.builtin.apt:
-    update_cache: true
-    name:
-      - docker-ce
-      - docker-ce-cli
-      - containerd.io
-      - docker-compose-plugin
+    name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
     state: present
 
-- name: Ensure Docker service is enabled and started
+- name: Ensure Docker is enabled and started
   become: true
   ansible.builtin.service:
     name: docker
@@ -67,9 +62,9 @@
     append: true
 
 # =====================================================
-# 2) Sysctl required for SonarQube (Elasticsearch)
+# 2) Cấu hình Hệ thống (Yêu cầu bởi SonarQube)
 # =====================================================
-- name: Set vm.max_map_count for SonarQube
+- name: Set vm.max_map_count for SonarQube (Elasticsearch)
   become: true
   ansible.posix.sysctl:
     name: vm.max_map_count
@@ -78,12 +73,12 @@
     reload: true
 
 # =====================================================
-# 3) Detect SonarQube UID/GID from image (avoid hardcode 999/1000)
+# 3) Xử lý UID/GID SonarQube (Tránh lỗi phân quyền Volume)
 # =====================================================
-- name: Pull SonarQube image (ensure available)
+- name: Pull SonarQube image first
   become: true
   ansible.builtin.command: docker pull sonarqube:lts-community
-  changed_when: false
+  changed_when: false # Lệnh này chỉ để đảm bảo image có sẵn
 
 - name: Get SonarQube UID from image
   become: true
@@ -97,15 +92,15 @@
   register: sonar_gid_cmd
   changed_when: false
 
-- name: Set SonarQube uid/gid facts
+- name: Set SonarQube uid/gid facts (Clean values)
   ansible.builtin.set_fact:
     sonarqube_uid: "{{ sonar_uid_cmd.stdout | trim }}"
     sonarqube_gid: "{{ sonar_gid_cmd.stdout | trim }}"
 
 # =====================================================
-# 4) Ensure directories (NO recurse here)
+# 4) Tạo cấu trúc thư mục & Phân quyền
 # =====================================================
-- name: Ensure CICD base directories exist
+- name: Ensure CICD directories exist
   become: true
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -115,60 +110,42 @@
     mode: "{{ item.mode }}"
   loop:
     - { path: "{{ cicd_dir }}", owner: "ubuntu", group: "ubuntu", mode: "0755" }
-    - { path: "{{ cicd_dir }}/jenkins_home", owner: "{{ jenkins_uid | default('1000') }}", group: "{{ jenkins_gid | default('1000') }}", mode: "0775" }
+    - { path: "{{ cicd_dir }}/jenkins_home", owner: "1000", group: "1000", mode: "0775" }
     - { path: "{{ cicd_dir }}/jenkins_casc", owner: "ubuntu", group: "ubuntu", mode: "0755" }
     - { path: "{{ cicd_dir }}/jenkins_init", owner: "ubuntu", group: "ubuntu", mode: "0755" }
     - { path: "{{ cicd_dir }}/sonarqube_data", owner: "{{ sonarqube_uid }}", group: "{{ sonarqube_gid }}", mode: "0775" }
     - { path: "{{ cicd_dir }}/sonarqube_extensions", owner: "{{ sonarqube_uid }}", group: "{{ sonarqube_gid }}", mode: "0775" }
     - { path: "{{ cicd_dir }}/sonarqube_logs", owner: "{{ sonarqube_uid }}", group: "{{ sonarqube_gid }}", mode: "0775" }
 
-# Sonar sometimes fails if old es7 directory was created with wrong owner
-- name: Remove old Elasticsearch data dir (es7) if exists (safe for fresh lab)
-  become: true
-  ansible.builtin.file:
-    path: "{{ cicd_dir }}/sonarqube_data/es7"
-    state: absent
-
-# Ensure sonar dirs owner recursively (ONLY sonar dirs)
-- name: Ensure SonarQube dirs are owned by SonarQube UID/GID
-  become: true
-  ansible.builtin.command: >
-    chown -R {{ sonarqube_uid }}:{{ sonarqube_gid }}
-    {{ cicd_dir }}/sonarqube_data
-    {{ cicd_dir }}/sonarqube_extensions
-    {{ cicd_dir }}/sonarqube_logs
-  changed_when: false
-
 # =====================================================
-# 5) Kubeconfig for Jenkins (K3s deploy)
+# 5) Kubeconfig cho Jenkins (Phục vụ Deploy lên K3s)
 # =====================================================
-- name: Ensure Jenkins kubeconfig directory exists in jenkins_home volume
+- name: Ensure Jenkins .kube directory exists
   become: true
   ansible.builtin.file:
     path: "{{ cicd_dir }}/jenkins_home/.kube"
     state: directory
-    owner: "{{ jenkins_uid | default('1000') }}"
-    group: "{{ jenkins_gid | default('1000') }}"
+    owner: "1000"
+    group: "1000"
     mode: "0755"
 
-- name: Read kubeconfig from master
+- name: Read kubeconfig from master node
   become: true
   ansible.builtin.slurp:
-    src: "{{ k3s_kubeconfig_src | default('/etc/rancher/k3s/k3s.yaml') }}"
+    src: "/etc/rancher/k3s/k3s.yaml"
   delegate_to: "{{ groups['masters'][0] }}"
   register: kubeconfig_raw
-  changed_when: false
 
-- name: Write kubeconfig into Jenkins volume (so Jenkins can deploy K8s)
+- name: Write kubeconfig into Jenkins volume
   become: true
   ansible.builtin.copy:
     dest: "{{ cicd_dir }}/jenkins_home/.kube/config"
     content: "{{ kubeconfig_raw.content | b64decode }}"
-    owner: "{{ jenkins_uid | default('1000') }}"
-    group: "{{ jenkins_gid | default('1000') }}"
-    mode: "0644"
+    owner: "1000"
+    group: "1000"
+    mode: "0600"
 
-- name: Replace localhost with master public IP in Jenkins kubeconfig
+- name: Update Kubeconfig Server IP to Master Public IP
   become: true
   ansible.builtin.replace:
     path: "{{ cicd_dir }}/jenkins_home/.kube/config"
@@ -176,84 +153,84 @@
     replace: "{{ hostvars[groups['masters'][0]].ansible_host }}"
 
 # =====================================================
-# 6) Render configs
+# 6) Pre-install Sonar Scanner (Bypass lỗi Unpacking)
 # =====================================================
-- name: Render docker compose file
+- name: Unarchive Sonar Scanner CLI to Jenkins volume
   become: true
-  ansible.builtin.template:
-    src: docker-compose.yml.j2
-    dest: "{{ cicd_dir }}/docker-compose.yml"
-    owner: ubuntu
-    group: ubuntu
-    mode: "0644"
+  ansible.builtin.unarchive:
+    src: https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+    dest: "{{ cicd_dir }}/jenkins_home"
+    remote_src: yes
+    owner: "1000"
+    group: "1000"
+    mode: "0755"
 
-- name: Render Jenkins Configuration as Code (JCasC)
-  become: true
-  ansible.builtin.template:
-    src: jenkins.yaml.j2
-    dest: "{{ cicd_dir }}/jenkins_casc/jenkins.yaml"
-    owner: ubuntu
-    group: ubuntu
-    mode: "0644"
-
-- name: Install init groovy for credentials
-  become: true
-  ansible.builtin.copy:
-    src: init-credentials.groovy
-    dest: "{{ cicd_dir }}/jenkins_init/01-init-credentials.groovy"
-    owner: ubuntu
-    group: ubuntu
-    mode: "0644"
-    
-- name: Copy Jenkins plugins list
-  copy:
-    src: plugins.txt
-    dest: "{{ cicd_dir }}/plugins.txt"
-    owner: ubuntu
-    group: ubuntu
-    mode: "0644"
-
-# =====================================================
-# 7) Start stack (docker compose)
-# =====================================================
-- name: Start Jenkins + SonarQube via docker compose
+- name: Setup Sonar Scanner directory path
   become: true
   ansible.builtin.shell: |
-    set -e
-    cd "{{ cicd_dir }}"
-    docker compose up -d
+    rm -rf {{ cicd_dir }}/jenkins_home/sonar-scanner
+    mv {{ cicd_dir }}/jenkins_home/sonar-scanner-5.0.1.3006-linux {{ cicd_dir }}/jenkins_home/sonar-scanner
   args:
-    executable: /bin/bash
+    creates: "{{ cicd_dir }}/jenkins_home/sonar-scanner"
 
 # =====================================================
-# 8) Install Trivy (clean method)
+# 7) Render Cấu hình & Khởi chạy Docker Compose
 # =====================================================
-- name: Install Trivy dependencies
-  become: true
-  ansible.builtin.apt:
-    name:
-      - wget
-      - apt-transport-https
-      - gnupg
-      - lsb-release
-    state: present
 
-- name: Add Trivy GPG key
+# Sử dụng module 'template' cho các tệp .j2 (Ansible sẽ tìm trong thư mục templates/)
+- name: Render CI/CD Templates (.j2 files)
   become: true
-  ansible.builtin.apt_key:
-    url: https://aquasecurity.github.io/trivy-repo/deb/public.key
-    state: present
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ cicd_dir }}/{{ item.dest }}"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0644"
+  loop:
+    - { src: 'docker-compose.yml.j2', dest: 'docker-compose.yml' }
+    - { src: 'jenkins.yaml.j2', dest: 'jenkins_casc/jenkins.yaml' }
 
-- name: Add Trivy apt repository
+# Sử dụng module 'copy' cho các tệp tĩnh (Ansible sẽ tìm trong thư mục files/ như trong ảnh a0dfda.png)
+- name: Copy Static CI/CD Files (Groovy & Plugins)
   become: true
-  ansible.builtin.apt_repository:
-    repo: "deb https://aquasecurity.github.io/trivy-repo/deb {{ ansible_distribution_release }} main"
-    state: present
-    filename: trivy
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ cicd_dir }}/{{ item.dest }}"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0644"
+  loop:
+    - { src: 'init-credentials.groovy', dest: 'jenkins_init/01-init-credentials.groovy' }
+    - { src: 'plugins.txt', dest: 'plugins.txt' }
 
-- name: Install Trivy
+- name: Start Jenkins + SonarQube Stack
   become: true
-  ansible.builtin.apt:
-    update_cache: true
-    name: trivy
-    state: present
+  shell: cd "{{ cicd_dir }}" && docker compose up -d
+# =====================================================
+# 8) KÍCH HOẠT CÀI PLUGIN (Fix lỗi Jenkins trống plugin)
+# =====================================================
+- name: Wait for Jenkins to initialize
+  ansible.builtin.pause:
+    seconds: 45
+
+- name: Trigger plugin installation via Jenkins CLI
+  become: true
+  ansible.builtin.shell: |
+    docker exec -u root jenkins jenkins-plugin-cli --plugin-file /usr/share/jenkins/ref/plugins.txt
+  register: plugin_install_out
+  failed_when: false
+
+- name: Restart Jenkins to finalize plugin activation
+  become: true
+  ansible.builtin.shell: "docker restart jenkins"
+  when: "'Installing' in plugin_install_out.stdout"
+
+# =====================================================
+# 9) Cài đặt Trivy (Security Scanning)
+# =====================================================
+- name: Install Trivy Security Scanner
+  become: true
+  ansible.builtin.shell: |
+    wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | tee /usr/share/keyrings/trivy.gpg > /dev/null
+    echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb {{ ansible_distribution_release }} main" | tee /etc/apt/sources.list.d/trivy.list
+    apt-get update && apt-get install trivy -y

@@ -46,7 +46,7 @@ pipeline {
                     // Sử dụng tool đã cấu hình trong Global Tool Configuration
                     def scannerHome = tool 'sonar-scanner'
                     withSonarQubeEnv("${SONAR_SERVER_NAME}") {
-                        sh "${scannerHome}/bin/sonar-scanner \
+                        sh "/var/jenkins_home/sonar-scanner/bin/sonar-scanner"
                             -Dsonar.projectKey=dolciluxe \
                             -Dsonar.sources=. \
                             -Dsonar.host.url=http://34.201.23.77:9000"

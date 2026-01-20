@@ -17,6 +17,7 @@
       - python3-setuptools
       - python3-wheel
       - python3-venv
+      - unzip
     state: present
 
 - name: Upgrade pip (recommended)
