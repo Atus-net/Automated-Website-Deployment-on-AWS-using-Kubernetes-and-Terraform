@@ -60,7 +60,11 @@
     name: ubuntu
     groups: docker
     append: true
-
+- name: Fix Docker socket permissions
+  become: true
+  ansible.builtin.file:
+    path: /var/run/docker.sock
+    mode: '0666'
 # =====================================================
 # 2) Cấu hình Hệ thống (Yêu cầu bởi SonarQube)
 # =====================================================

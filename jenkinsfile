@@ -4,8 +4,8 @@ pipeline {
     environment {
         // Thông tin Docker Registry
         DOCKER_USER = 'latuss' // Username Docker Hub của bạn
-        FE_IMAGE    = "${DOCKER_USER}/frontend"
-        BE_IMAGE    = "${DOCKER_USER}/backend"
+        FE_IMAGE    = "${DOCKER_USER}/dolciluxe-frontend"
+        BE_IMAGE    = "${DOCKER_USER}/dolciluxe-backend"
         IMAGE_TAG   = "${BUILD_NUMBER}"
         
         // IDs Credentials đã tạo trong Jenkins
