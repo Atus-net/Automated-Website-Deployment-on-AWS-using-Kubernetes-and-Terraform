@@ -68,8 +68,6 @@ resource "aws_instance" "devops_node" {
     encrypted   = true
   }
 
-  user_data = file(var.devops_user_data_path)
-
   tags = {
     Name = "DevOps-Node"
     Role = "devops"

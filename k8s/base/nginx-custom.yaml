@@ -344,7 +344,7 @@ metadata:
   name: ingress-nginx-controller
   namespace: ingress-nginx
 spec:
-  externalTrafficPolicy: Local
+  externalTrafficPolicy: Cluster
   ipFamilies:
   - IPv4
   ipFamilyPolicy: SingleStack
@@ -354,20 +354,23 @@ spec:
     port: 80
     protocol: TCP
     targetPort: http
+    nodePort: 30080         
   - appProtocol: https
     name: https
     port: 443
     protocol: TCP
     targetPort: https
-  - name: proxied-8080       # <--- THÊM ĐOẠN NÀY
-    port: 8080               # <--- THÊM ĐOẠN NÀY
-    protocol: TCP            # <--- THÊM ĐOẠN NÀY
-    targetPort: http         # <--- THÊM ĐOẠN NÀY
+    nodePort: 30443         
+  - name: proxied-8080
+    port: 8080
+    protocol: TCP
+    targetPort: http        
+    nodePort: 30880         
   selector:
     app.kubernetes.io/component: controller
     app.kubernetes.io/instance: ingress-nginx
     app.kubernetes.io/name: ingress-nginx
-  type: LoadBalancer
+  type: NodePort            
 ---
 apiVersion: v1
 kind: Service

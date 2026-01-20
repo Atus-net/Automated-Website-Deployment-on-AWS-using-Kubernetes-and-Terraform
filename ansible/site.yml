@@ -59,41 +59,6 @@
         regexp: '127\.0\.0\.1'
         replace: "{{ ansible_host }}"
 
-- name: "CONFIG: Put kubeconfig into Jenkins volume on DevOps node"
-  hosts: devops
-  become: yes
-  tags: [config, devops]
-  vars:
-    cicd_dir: "{{ cicd_dir | default('/opt/cicd') }}"
-  tasks:
-    - name: Ensure Jenkins kubeconfig directory exists in jenkins_home volume
-      file:
-        path: "{{ cicd_dir }}/jenkins_home/.kube"
-        state: directory
-        owner: "1000"
-        group: "1000"
-        mode: "0755"
-
-    - name: Fetch kubeconfig from master to controller
-      slurp:
-        src: /etc/rancher/k3s/k3s.yaml
-      delegate_to: "{{ groups['masters'][0] }}"
-      register: kubeconfig_raw
-
-    - name: Write kubeconfig into Jenkins volume
-      copy:
-        dest: "{{ cicd_dir }}/jenkins_home/.kube/config"
-        content: "{{ kubeconfig_raw.content | b64decode }}"
-        owner: "1000"
-        group: "1000"
-        mode: "0644"
-
-    - name: Replace localhost with master public IP in Jenkins kubeconfig
-      replace:
-        path: "{{ cicd_dir }}/jenkins_home/.kube/config"
-        regexp: '127\.0\.0\.1'
-        replace: "{{ hostvars[groups['masters'][0]].ansible_host }}"
-
 # =======================================================
 # Stage D: CI/CD tools (DevOps node)
 # Jenkins + SonarQube + Trivy (DockerHub creds managed in Jenkins UI)

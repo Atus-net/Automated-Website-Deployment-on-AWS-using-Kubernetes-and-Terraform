@@ -341,6 +341,16 @@ metadata:
     app.kubernetes.io/name: ingress-nginx
     app.kubernetes.io/part-of: ingress-nginx
     app.kubernetes.io/version: 1.10.1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/instance: ingress-nginx
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/part-of: ingress-nginx
+    app.kubernetes.io/version: 1.10.1
   name: ingress-nginx-controller
   namespace: ingress-nginx
 spec:
@@ -354,20 +364,23 @@ spec:
     port: 80
     protocol: TCP
     targetPort: http
+    nodePort: 30080         # <--- Cố định cổng để dễ quản lý trên AWS
   - appProtocol: https
     name: https
     port: 443
     protocol: TCP
     targetPort: https
-  - name: proxied-8080       # <--- THÊM ĐOẠN NÀY
-    port: 8080               # <--- THÊM ĐOẠN NÀY
-    protocol: TCP            # <--- THÊM ĐOẠN NÀY
-    targetPort: http         # <--- THÊM ĐOẠN NÀY
+    nodePort: 30443         # <--- Cố định cổng HTTPS
+  - name: proxied-8080
+    port: 8080
+    protocol: TCP
+    targetPort: http        # <--- Chuyển hướng port 8080 vào luồng xử lý HTTP của Ingress
+    nodePort: 30880         # <--- Cố định cổng nếu bạn vẫn muốn gọi :8080
   selector:
     app.kubernetes.io/component: controller
     app.kubernetes.io/instance: ingress-nginx
     app.kubernetes.io/name: ingress-nginx
-  type: LoadBalancer
+  type: NodePort            # <--- THAY ĐỔI: Chuyển từ LoadBalancer sang NodePort
 ---
 apiVersion: v1
 kind: Service

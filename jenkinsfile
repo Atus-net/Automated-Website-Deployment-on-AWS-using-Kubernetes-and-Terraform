@@ -1,184 +1,100 @@
 pipeline {
-  agent any
-
-  options {
-    timestamps()
-    disableConcurrentBuilds()
-    ansiColor('xterm')
-    buildDiscarder(logRotator(numToKeepStr: '20'))
-  }
-
-  parameters {
-    booleanParam(name: 'RUN_SONAR', defaultValue: true, description: 'Run SonarQube scan')
-    booleanParam(name: 'RUN_TRIVY', defaultValue: true, description: 'Run Trivy scans')
-    booleanParam(name: 'DEPLOY', defaultValue: true, description: 'Deploy to K3s via Ansible')
-  }
-
-  environment {
-    // Image name (không kèm username, username lấy từ Jenkins credential)
-    BACKEND_IMAGE  = 'dolciluxe-backend'
-    FRONTEND_IMAGE = 'dolciluxe-frontend'
-
-    // Tag theo build
-    IMAGE_TAG = "${BUILD_NUMBER}"
-
-    // Paths trong repo (đổi nếu repo bạn khác)
-    BACKEND_DIR  = 'backend'
-    FRONTEND_DIR = 'frontend'
-
-    // Ansible files (đổi nếu bạn đặt trong thư mục con)
-    INVENTORY_FILE = 'inventory.ini'
-    DEPLOY_PLAYBOOK = 'deploy.yml'
-
-    // Docker config cho Jenkins chạy trong container
-    // (an toàn hơn dùng HOME/WORKSPACE thay vì hardcode /var/lib/jenkins)
-    DOCKER_CONFIG = "${WORKSPACE}/.docker"
-  }
-
-  stages {
-    stage('Checkout') {
-      steps {
-        checkout scm
-      }
+    agent any
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        ansiColor('xterm')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
     }
-
-    stage('Pre-check') {
-      steps {
-        sh '''
-          set -e
-          test -f "${INVENTORY_FILE}" || (echo "Missing ${INVENTORY_FILE} (Terraform stage2 output)"; exit 1)
-          test -f "${DEPLOY_PLAYBOOK}" || (echo "Missing ${DEPLOY_PLAYBOOK}"; exit 1)
-          mkdir -p "${DOCKER_CONFIG}"
-        '''
-      }
+    parameters {
+        booleanParam(name: 'FORCE_BUILD_ALL', defaultValue: false, description: 'Bắt buộc build lại cả 2 service')
+        booleanParam(name: 'RUN_SONAR', defaultValue: true, description: 'Chạy quét SonarQube')
     }
-
-    stage('Docker Login') {
-      steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'dockerhub',
-          usernameVariable: 'DOCKER_USER',
-          passwordVariable: 'DOCKER_PASS'
-        )]) {
-          sh '''
-            set -e
-            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-          '''
-        }
-      }
+    environment {
+        DOCKER_USER_ID = 'dockerhub' // ID trong Jenkins Credentials
+        VAULT_PASS_ID  = 'ansible-vault-pass' // ID Secret Text trong Jenkins
+        BACKEND_IMAGE  = 'dolciluxe-backend'
+        FRONTEND_IMAGE = 'dolciluxe-frontend'
+        IMAGE_TAG      = "${BUILD_NUMBER}"
     }
-
-    stage('Build & Push Images') {
-      parallel {
-        stage('Backend') {
-          steps {
-            withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-              dir("${BACKEND_DIR}") {
-                sh '''
-                  set -e
-                  IMAGE="${DOCKER_USER}/${BACKEND_IMAGE}:${IMAGE_TAG}"
-                  docker build -t "$IMAGE" .
-                  docker push "$IMAGE"
-
-                  docker tag "$IMAGE" "${DOCKER_USER}/${BACKEND_IMAGE}:latest"
-                  docker push "${DOCKER_USER}/${BACKEND_IMAGE}:latest"
-                '''
-              }
+    stages {
+        stage('Checkout & Detect Changes') {
+            steps {
+                checkout scm
+                script {
+                    // Logic nhận diện thư mục nào có thay đổi so với commit trước
+                    def changedFiles = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim()
+                    env.FE_CHANGED = changedFiles.contains('frontend/') || params.FORCE_BUILD_ALL
+                    env.BE_CHANGED = changedFiles.contains('backend/') || params.FORCE_BUILD_ALL
+                    echo "Frontend Changed: ${env.FE_CHANGED} | Backend Changed: ${env.BE_CHANGED}"
+                }
             }
-          }
         }
 
-        stage('Frontend') {
-          steps {
-            withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-              dir("${FRONTEND_DIR}") {
-                sh '''
-                  set -e
-                  IMAGE="${DOCKER_USER}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
-                  docker build -t "$IMAGE" .
-                  docker push "$IMAGE"
-
-                  docker tag "$IMAGE" "${DOCKER_USER}/${FRONTEND_IMAGE}:latest"
-                  docker push "${DOCKER_USER}/${FRONTEND_IMAGE}:latest"
-                '''
-              }
+        stage('Security Scan (SonarQube)') {
+            when { expression { return params.RUN_SONAR } }
+            steps {
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                    sh '''
+                        docker run --rm -v "$PWD:/usr/src" sonarsource/sonar-scanner-cli \
+                        -Dsonar.projectKey=dolciluxe -Dsonar.sources=backend,frontend \
+                        -Dsonar.host.url="http://sonarqube:9000" -Dsonar.login="$SONAR_TOKEN"
+                    '''
+                }
             }
-          }
         }
-      }
-    }
 
-    stage('SonarQube Scan') {
-      when { expression { return params.RUN_SONAR } }
-      steps {
-        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-          sh '''
-            set -e
-            # Nếu Jenkins và Sonar chạy cùng docker-compose network, hostname "sonarqube" sẽ OK.
-            # Nếu không, đổi SONAR_HOST_URL sang http://<DEVOPS_PUBLIC_IP>:9000
-            docker run --rm \
-              -e SONAR_HOST_URL="http://sonarqube:9000" \
-              -e SONAR_LOGIN="$SONAR_TOKEN" \
-              -v "$PWD:/usr/src" \
-              sonarsource/sonar-scanner-cli \
-              -Dsonar.projectKey=dolciluxe \
-              -Dsonar.sources=backend,frontend
-          '''
+        stage('Parallel Build & Push') {
+            parallel {
+                stage('Build Frontend') {
+                    when { expression { return env.FE_CHANGED == 'true' } }
+                    steps {
+                        withCredentials([usernamePassword(credentialsId: "${DOCKER_USER_ID}", usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                            dir('frontend') {
+                                sh "docker build -t ${USER}/${FRONTEND_IMAGE}:${IMAGE_TAG} ."
+                                sh "docker tag ${USER}/${FRONTEND_IMAGE}:${IMAGE_TAG} ${USER}/${FRONTEND_IMAGE}:latest"
+                                sh "docker push ${USER}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
+                                sh "docker push ${USER}/${FRONTEND_IMAGE}:latest"
+                            }
+                        }
+                    }
+                }
+                stage('Build Backend') {
+                    when { expression { return env.BE_CHANGED == 'true' } }
+                    steps {
+                        withCredentials([usernamePassword(credentialsId: "${DOCKER_USER_ID}", usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                            dir('backend') {
+                                sh "docker build -t ${USER}/${BACKEND_IMAGE}:${IMAGE_TAG} ."
+                                sh "docker tag ${USER}/${BACKEND_IMAGE}:${IMAGE_TAG} ${USER}/${BACKEND_IMAGE}:latest"
+                                sh "docker push ${USER}/${BACKEND_IMAGE}:${IMAGE_TAG}"
+                                sh "docker push ${USER}/${BACKEND_IMAGE}:latest"
+                            }
+                        }
+                    }
+                }
+            }
         }
-      }
-    }
 
-    stage('Trivy Scan') {
-      when { expression { return params.RUN_TRIVY } }
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-          sh '''
-            set -e
-
-            echo "== Trivy FS (repo) =="
-            docker run --rm -v "$PWD:/work" -w /work aquasec/trivy:latest \
-              fs --exit-code 0 --severity HIGH,CRITICAL .
-
-            echo "== Trivy Image Backend =="
-            docker run --rm aquasec/trivy:latest \
-              image --exit-code 0 --severity HIGH,CRITICAL \
-              "${DOCKER_USER}/${BACKEND_IMAGE}:${IMAGE_TAG}"
-
-            echo "== Trivy Image Frontend =="
-            docker run --rm aquasec/trivy:latest \
-              image --exit-code 0 --severity HIGH,CRITICAL \
-              "${DOCKER_USER}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
-          '''
+        stage('Deploy to K3s') {
+            steps {
+                withCredentials([string(credentialsId: "${VAULT_PASS_ID}", variable: 'VAULT_CONTENT')]) {
+                    sh '''
+                        echo "$VAULT_CONTENT" > .vault_pass
+                        if [ "$FE_CHANGED" = "true" ]; then
+                           ansible-playbook -i inventory.ini deploy.yml --tags deploy \
+                           --vault-password-file .vault_pass -e "target_service=frontend image_tag=${IMAGE_TAG}"
+                        fi
+                        if [ "$BE_CHANGED" = "true" ]; then
+                           ansible-playbook -i inventory.ini deploy.yml --tags deploy \
+                           --vault-password-file .vault_pass -e "target_service=backend image_tag=${IMAGE_TAG}"
+                        fi
+                        rm -f .vault_pass
+                    '''
+                }
+            }
         }
-      }
     }
-
-    stage('Deploy to K3s (Ansible)') {
-      when { expression { return params.DEPLOY } }
-      steps {
-        sh '''
-          set -e
-          ansible --version
-
-          ansible-playbook -i "${INVENTORY_FILE}" "${DEPLOY_PLAYBOOK}" --tags deploy \
-            --extra-vars "backend_image_tag=${IMAGE_TAG} frontend_image_tag=${IMAGE_TAG}"
-        '''
-      }
+    post {
+        always { cleanWs() }
     }
-  }
-
-  post {
-    always {
-      sh 'docker logout || true'
-      cleanWs(deleteDirs: true, disableDeferredWipeout: true)
-    }
-
-    success {
-      echo "Pipeline SUCCESS. Deployed tag=${BUILD_NUMBER}"
-    }
-
-    failure {
-      echo "Pipeline FAILED. Check stages logs."
-    }
-  }
 }

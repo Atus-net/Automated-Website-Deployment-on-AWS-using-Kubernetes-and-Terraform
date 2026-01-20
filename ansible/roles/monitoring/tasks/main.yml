@@ -1,4 +1,5 @@
 ---
+# 1. Cài đặt Helm trên Master nếu chưa có
 - name: Install Helm on master if missing
   become: true
   shell: |
@@ -8,7 +9,24 @@
     fi
   args:
     creates: /usr/local/bin/helm
+  tags: [monitoring]
 
+# 2. Dọn dẹp tài nguyên cũ (Tránh lỗi Ownership Metadata)
+- name: Force cleanup of existing non-Helm ingress resources
+  become: true
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  shell: |
+    kubectl delete clusterrole ingress-nginx --ignore-not-found
+    kubectl delete clusterrolebinding ingress-nginx --ignore-not-found
+    kubectl delete ingressclass nginx --ignore-not-found
+    if kubectl get ns ingress-nginx >/dev/null 2>&1; then
+      kubectl delete namespace ingress-nginx --wait=true
+    fi
+  ignore_errors: yes
+  tags: [monitoring]
+
+# 3. Đảm bảo Namespace cho Monitoring tồn tại
 - name: Ensure monitoring namespace exists
   environment:
     KUBECONFIG: "{{ kubeconfig_path }}"
@@ -19,19 +37,19 @@
       kind: Namespace
       metadata:
         name: "{{ monitoring_namespace }}"
+  tags: [monitoring]
 
-# -------------------------
-# Ingress Controller (nginx)
-# -------------------------
-- name: Add Helm repo for ingress-nginx
+# 4. Thêm các Helm Repo (Đã sửa lỗi become_timeout)
+- name: Add Helm repos
   become: true
   shell: |
     set -e
     helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
     helm repo update
-  args:
-    creates: /root/.cache/helm/repository/ingress-nginx-index.yaml
+  tags: [monitoring]
 
+# 5. Cài đặt Ingress Controller (Cổng 30080)
 - name: Install/Upgrade ingress-nginx controller
   become: true
   environment:
@@ -39,35 +57,15 @@
   shell: |
     set -e
     helm upgrade --install {{ ingress_nginx_release_name }} ingress-nginx/ingress-nginx \
-      --namespace ingress-nginx --create-namespace
+      --namespace ingress-nginx --create-namespace \
+      --set controller.service.type=NodePort \
+      --set controller.service.nodePorts.http=30080
   register: nginx_helm_out
-  changed_when: >
-    'Release' in nginx_helm_out.stdout and (
-      'installed' in nginx_helm_out.stdout or 'upgraded' in nginx_helm_out.stdout
-    )
+  changed_when: "'installed' in nginx_helm_out.stdout or 'upgraded' in nginx_helm_out.stdout"
+  tags: [monitoring]
 
-- name: Wait for ingress-nginx controller to be ready
-  become: true
-  environment:
-    KUBECONFIG: "{{ kubeconfig_path }}"
-  shell: |
-    set -e
-    kubectl rollout status deployment/{{ ingress_nginx_release_name }}-ingress-nginx-controller -n ingress-nginx --timeout=180s
-  changed_when: false
-
-# -------------------------
-# kube-prometheus-stack
-# -------------------------
-- name: Add Helm repo for prometheus-community
-  become: true
-  shell: |
-    set -e
-    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-    helm repo update
-  args:
-    creates: /root/.cache/helm/repository/prometheus-community-index.yaml
-
-- name: Install/Upgrade kube-prometheus-stack (Prometheus + Grafana)
+# 6. Cài đặt Kube-Prometheus-Stack
+- name: Install/Upgrade kube-prometheus-stack
   become: true
   environment:
     KUBECONFIG: "{{ kubeconfig_path }}"
@@ -79,26 +77,18 @@
       --set grafana.service.type=ClusterIP \
       --set prometheus.service.type=ClusterIP
   register: monitoring_helm_out
-  changed_when: >
-    'Release' in monitoring_helm_out.stdout and (
-      'installed' in monitoring_helm_out.stdout or 'upgraded' in monitoring_helm_out.stdout
-    )
+  changed_when: "'installed' in monitoring_helm_out.stdout or 'upgraded' in monitoring_helm_out.stdout"
+  tags: [monitoring]
 
-# -------------------------
-# Ingress objects (optional)
-# -------------------------
-- name: Create Ingress for Grafana
+# 7. Tạo Ingress cho các công cụ giám sát
+- name: Create Ingress objects for Monitoring
   when: monitoring_enable_ingress | bool
   environment:
     KUBECONFIG: "{{ kubeconfig_path }}"
   kubernetes.core.k8s:
     state: present
-    definition: "{{ lookup('template', 'grafana-ingress.yml.j2') }}"
-
-- name: Create Ingress for Prometheus
-  when: monitoring_enable_ingress | bool
-  environment:
-    KUBECONFIG: "{{ kubeconfig_path }}"
-  kubernetes.core.k8s:
-    state: present
-    definition: "{{ lookup('template', 'prometheus-ingress.yml.j2') }}"
+    definition: "{{ lookup('template', item) }}"
+  loop:
+    - grafana-ingress.yml.j2
+    - prometheus-ingress.yml.j2
+  tags: [monitoring]

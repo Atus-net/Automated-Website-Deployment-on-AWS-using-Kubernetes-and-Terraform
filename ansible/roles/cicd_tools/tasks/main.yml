@@ -1,33 +1,49 @@
 ---
 # roles/cicd_tools/tasks/main.yml
 
+# =====================================================
+# 0) Base vars sanity (optional - avoid undefined)
+# =====================================================
+- name: Ensure cicd_dir has a default value
+  set_fact:
+    cicd_dir: "{{ cicd_dir | default('/opt/cicd') }}"
+
+# =====================================================
+# 1) Install Docker Engine + Compose plugin
+# =====================================================
 - name: Update apt cache
-  apt:
+  become: true
+  ansible.builtin.apt:
     update_cache: true
     cache_valid_time: 3600
 
 - name: Install base dependencies for Docker repo
-  apt:
+  become: true
+  ansible.builtin.apt:
     name:
       - ca-certificates
       - curl
       - gnupg
       - lsb-release
+      - lsof
     state: present
 
 - name: Add Docker official GPG key
-  apt_key:
+  become: true
+  ansible.builtin.apt_key:
     url: https://download.docker.com/linux/ubuntu/gpg
     state: present
 
 - name: Add Docker apt repository
-  apt_repository:
+  become: true
+  ansible.builtin.apt_repository:
     repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
     state: present
     filename: docker
 
 - name: Install Docker Engine + Compose plugin
-  apt:
+  become: true
+  ansible.builtin.apt:
     update_cache: true
     name:
       - docker-ce
@@ -37,72 +53,134 @@
     state: present
 
 - name: Ensure Docker service is enabled and started
-  service:
+  become: true
+  ansible.builtin.service:
     name: docker
     state: started
     enabled: true
 
 - name: Add ubuntu user to docker group
-  user:
+  become: true
+  ansible.builtin.user:
     name: ubuntu
     groups: docker
     append: true
 
-# =========================
-# Secrets (optional)
-# =========================
-- name: Load secrets (optional)
-  include_vars:
-    file: "{{ playbook_dir }}/vars/secrets.yml"
-  no_log: true
-  ignore_errors: true
+# =====================================================
+# 2) Sysctl required for SonarQube (Elasticsearch)
+# =====================================================
+- name: Set vm.max_map_count for SonarQube
+  become: true
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: "262144"
+    state: present
+    reload: true
 
-# =========================
-# Ensure directories
-# =========================
-- name: Ensure CICD directories exist (Jenkins + SonarQube)
-  file:
+# =====================================================
+# 3) Detect SonarQube UID/GID from image (avoid hardcode 999/1000)
+# =====================================================
+- name: Pull SonarQube image (ensure available)
+  become: true
+  ansible.builtin.command: docker pull sonarqube:lts-community
+  changed_when: false
+
+- name: Get SonarQube UID from image
+  become: true
+  ansible.builtin.command: "docker run --rm sonarqube:lts-community id -u"
+  register: sonar_uid_cmd
+  changed_when: false
+
+- name: Get SonarQube GID from image
+  become: true
+  ansible.builtin.command: "docker run --rm sonarqube:lts-community id -g"
+  register: sonar_gid_cmd
+  changed_when: false
+
+- name: Set SonarQube uid/gid facts
+  ansible.builtin.set_fact:
+    sonarqube_uid: "{{ sonar_uid_cmd.stdout | trim }}"
+    sonarqube_gid: "{{ sonar_gid_cmd.stdout | trim }}"
+
+# =====================================================
+# 4) Ensure directories (NO recurse here)
+# =====================================================
+- name: Ensure CICD base directories exist
+  become: true
+  ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory
-    owner: "{{ item.owner | default('ubuntu') }}"
-    group: "{{ item.group | default('ubuntu') }}"
-    mode: "{{ item.mode | default('0755') }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
   loop:
     - { path: "{{ cicd_dir }}", owner: "ubuntu", group: "ubuntu", mode: "0755" }
-    - { path: "{{ cicd_dir }}/jenkins_home", owner: "1000", group: "1000", mode: "0775" }
+    - { path: "{{ cicd_dir }}/jenkins_home", owner: "{{ jenkins_uid | default('1000') }}", group: "{{ jenkins_gid | default('1000') }}", mode: "0775" }
     - { path: "{{ cicd_dir }}/jenkins_casc", owner: "ubuntu", group: "ubuntu", mode: "0755" }
     - { path: "{{ cicd_dir }}/jenkins_init", owner: "ubuntu", group: "ubuntu", mode: "0755" }
-    - { path: "{{ cicd_dir }}/sonarqube_data", owner: "999", group: "999", mode: "0775" }
-    - { path: "{{ cicd_dir }}/sonarqube_extensions", owner: "999", group: "999", mode: "0775" }
+    - { path: "{{ cicd_dir }}/sonarqube_data", owner: "{{ sonarqube_uid }}", group: "{{ sonarqube_gid }}", mode: "0775" }
+    - { path: "{{ cicd_dir }}/sonarqube_extensions", owner: "{{ sonarqube_uid }}", group: "{{ sonarqube_gid }}", mode: "0775" }
+    - { path: "{{ cicd_dir }}/sonarqube_logs", owner: "{{ sonarqube_uid }}", group: "{{ sonarqube_gid }}", mode: "0775" }
 
-# =========================
-# Ports cleanup (lab-friendly)
-# =========================
-- name: Stop any process using port 8080
-  shell: |
-    set -e
-    pid=$(sudo lsof -t -i:8080 || true)
-    if [ -n "$pid" ]; then
-      sudo kill -9 $pid
-    fi
-  args:
-    executable: /bin/bash
+# Sonar sometimes fails if old es7 directory was created with wrong owner
+- name: Remove old Elasticsearch data dir (es7) if exists (safe for fresh lab)
+  become: true
+  ansible.builtin.file:
+    path: "{{ cicd_dir }}/sonarqube_data/es7"
+    state: absent
 
-- name: Stop any process using port 9000
-  shell: |
-    set -e
-    pid=$(sudo lsof -t -i:9000 || true)
-    if [ -n "$pid" ]; then
-      sudo kill -9 $pid
-    fi
-  args:
-    executable: /bin/bash
+# Ensure sonar dirs owner recursively (ONLY sonar dirs)
+- name: Ensure SonarQube dirs are owned by SonarQube UID/GID
+  become: true
+  ansible.builtin.command: >
+    chown -R {{ sonarqube_uid }}:{{ sonarqube_gid }}
+    {{ cicd_dir }}/sonarqube_data
+    {{ cicd_dir }}/sonarqube_extensions
+    {{ cicd_dir }}/sonarqube_logs
+  changed_when: false
 
-# =========================
-# Render configs
-# =========================
+# =====================================================
+# 5) Kubeconfig for Jenkins (K3s deploy)
+# =====================================================
+- name: Ensure Jenkins kubeconfig directory exists in jenkins_home volume
+  become: true
+  ansible.builtin.file:
+    path: "{{ cicd_dir }}/jenkins_home/.kube"
+    state: directory
+    owner: "{{ jenkins_uid | default('1000') }}"
+    group: "{{ jenkins_gid | default('1000') }}"
+    mode: "0755"
+
+- name: Read kubeconfig from master
+  become: true
+  ansible.builtin.slurp:
+    src: "{{ k3s_kubeconfig_src | default('/etc/rancher/k3s/k3s.yaml') }}"
+  delegate_to: "{{ groups['masters'][0] }}"
+  register: kubeconfig_raw
+  changed_when: false
+
+- name: Write kubeconfig into Jenkins volume (so Jenkins can deploy K8s)
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ cicd_dir }}/jenkins_home/.kube/config"
+    content: "{{ kubeconfig_raw.content | b64decode }}"
+    owner: "{{ jenkins_uid | default('1000') }}"
+    group: "{{ jenkins_gid | default('1000') }}"
+    mode: "0644"
+
+- name: Replace localhost with master public IP in Jenkins kubeconfig
+  become: true
+  ansible.builtin.replace:
+    path: "{{ cicd_dir }}/jenkins_home/.kube/config"
+    regexp: '127\.0\.0\.1'
+    replace: "{{ hostvars[groups['masters'][0]].ansible_host }}"
+
+# =====================================================
+# 6) Render configs
+# =====================================================
 - name: Render docker compose file
-  template:
+  become: true
+  ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "{{ cicd_dir }}/docker-compose.yml"
     owner: ubuntu
@@ -110,58 +188,72 @@
     mode: "0644"
 
 - name: Render Jenkins Configuration as Code (JCasC)
-  template:
+  become: true
+  ansible.builtin.template:
     src: jenkins.yaml.j2
     dest: "{{ cicd_dir }}/jenkins_casc/jenkins.yaml"
     owner: ubuntu
     group: ubuntu
     mode: "0644"
 
-# Init Groovy should only upsert sonar-token (DockerHub creds managed in Jenkins UI)
 - name: Install init groovy for credentials
-  copy:
+  become: true
+  ansible.builtin.copy:
     src: init-credentials.groovy
     dest: "{{ cicd_dir }}/jenkins_init/01-init-credentials.groovy"
     owner: ubuntu
     group: ubuntu
     mode: "0644"
+    
+- name: Copy Jenkins plugins list
+  copy:
+    src: plugins.txt
+    dest: "{{ cicd_dir }}/plugins.txt"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0644"
 
-# =========================
-# Start stack
-# =========================
+# =====================================================
+# 7) Start stack (docker compose)
+# =====================================================
 - name: Start Jenkins + SonarQube via docker compose
-  shell: |
+  become: true
+  ansible.builtin.shell: |
     set -e
     cd "{{ cicd_dir }}"
     docker compose up -d
   args:
     executable: /bin/bash
 
-# =========================
-# Install Trivy
-# =========================
+# =====================================================
+# 8) Install Trivy (clean method)
+# =====================================================
 - name: Install Trivy dependencies
-  apt:
+  become: true
+  ansible.builtin.apt:
     name:
       - wget
       - apt-transport-https
+      - gnupg
+      - lsb-release
     state: present
 
-- name: Add Trivy repository key
-  shell: |
-    set -e
-    wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-  args:
-    executable: /bin/bash
+- name: Add Trivy GPG key
+  become: true
+  ansible.builtin.apt_key:
+    url: https://aquasecurity.github.io/trivy-repo/deb/public.key
+    state: present
 
 - name: Add Trivy apt repository
-  apt_repository:
+  become: true
+  ansible.builtin.apt_repository:
     repo: "deb https://aquasecurity.github.io/trivy-repo/deb {{ ansible_distribution_release }} main"
     state: present
     filename: trivy
 
 - name: Install Trivy
-  apt:
+  become: true
+  ansible.builtin.apt:
     update_cache: true
     name: trivy
     state: present

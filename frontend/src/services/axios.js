@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 
-const BE_BASE_URL = `${window.location.protocol}//${window.location.hostname}:8080`;
+const BE_BASE_URL = ``;
 
 const response = axios.create({
   baseURL: BE_BASE_URL, 

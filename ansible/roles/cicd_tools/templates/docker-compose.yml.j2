@@ -31,5 +31,6 @@ services:
     environment:
       - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
     volumes:
-      - "{{ cicd_dir }}/sonarqube_data:/opt/sonarqube/data"
-      - "{{ cicd_dir }}/sonarqube_extensions:/opt/sonarqube/extensions"
+      - {{ cicd_dir }}/sonarqube_data:/opt/sonarqube/data
+      - {{ cicd_dir }}/sonarqube_extensions:/opt/sonarqube/extensions
+      - {{ cicd_dir }}/sonarqube_logs:/opt/sonarqube/logs

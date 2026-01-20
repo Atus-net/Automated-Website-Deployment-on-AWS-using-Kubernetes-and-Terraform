@@ -1,5 +1,10 @@
 ---
 cicd_dir: /opt/cicd
+jenkins_uid: "1000"
+jenkins_gid: "1000"
+k3s_kubeconfig_src: /etc/rancher/k3s/k3s.yaml
+sonarqube_uid: "1000"
+sonarqube_gid: "1000"
 jenkins_http_port: 8080
 sonarqube_http_port: 9000
 
@@ -8,8 +13,7 @@ jenkins_admin_user: admin
 jenkins_admin_password: admin123
 
 # Optional credentials created in Jenkins (set via --extra-vars)
-dockerhub_username: ""
-dockerhub_password: ""
+
 sonarqube_token: ""
 
 # Plugins list (keep minimal + common)
